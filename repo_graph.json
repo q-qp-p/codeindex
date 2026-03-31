@@ -1,12 +1,13 @@
 {
   "meta": {
     "root": "cozychairbooks/",
-    "total_files": 57,
-    "total_loc": 3925,
+    "total_files": 60,
+    "total_loc": 4085,
     "languages": [
       "python",
       "javascript",
-      "css"
+      "css",
+      "docker"
     ]
   },
   "nodes": [
@@ -764,6 +765,92 @@
       "loc": 134,
       "group": 15,
       "imports": 0
+    },
+    {
+      "id": "db",
+      "type": "service",
+      "language": "docker",
+      "image": "postgres:15-alpine",
+      "size": 60,
+      "loc": 0,
+      "group": 19,
+      "imports": 0
+    },
+    {
+      "id": "backend",
+      "type": "service",
+      "language": "docker",
+      "image": "build:./backend",
+      "size": 60,
+      "loc": 0,
+      "group": 19,
+      "imports": 1
+    },
+    {
+      "id": "frontend",
+      "type": "service",
+      "language": "docker",
+      "image": "build:./frontend",
+      "size": 60,
+      "loc": 0,
+      "group": 19,
+      "imports": 1
+    },
+    {
+      "id": "backend/Dockerfile",
+      "type": "service",
+      "language": "docker",
+      "image": "",
+      "size": 23,
+      "loc": 23,
+      "group": 20,
+      "imports": 0
+    },
+    {
+      "id": "frontend/Dockerfile",
+      "type": "service",
+      "language": "docker",
+      "image": "",
+      "size": 38,
+      "loc": 38,
+      "group": 18,
+      "imports": 0
+    },
+    {
+      "id": "postgres",
+      "type": "import",
+      "language": "docker",
+      "size": 40,
+      "loc": 0,
+      "group": 9000,
+      "imports": 0
+    },
+    {
+      "id": "python",
+      "type": "import",
+      "language": "docker",
+      "size": 40,
+      "loc": 0,
+      "group": 9000,
+      "imports": 0
+    },
+    {
+      "id": "node",
+      "type": "import",
+      "language": "docker",
+      "size": 40,
+      "loc": 0,
+      "group": 9000,
+      "imports": 0
+    },
+    {
+      "id": "nginx",
+      "type": "import",
+      "language": "docker",
+      "size": 40,
+      "loc": 0,
+      "group": 9000,
+      "imports": 0
     }
   ],
   "links": [
@@ -1468,6 +1555,42 @@
       "target": "@vitejs/plugin-react",
       "weight": 1,
       "kind": "imports"
+    },
+    {
+      "source": "backend",
+      "target": "db",
+      "weight": 1,
+      "kind": "depends"
+    },
+    {
+      "source": "frontend",
+      "target": "backend",
+      "weight": 1,
+      "kind": "depends"
+    },
+    {
+      "source": "db",
+      "target": "postgres",
+      "weight": 1,
+      "kind": "depends"
+    },
+    {
+      "source": "backend/Dockerfile",
+      "target": "python",
+      "weight": 1,
+      "kind": "depends"
+    },
+    {
+      "source": "frontend/Dockerfile",
+      "target": "node",
+      "weight": 1,
+      "kind": "depends"
+    },
+    {
+      "source": "frontend/Dockerfile",
+      "target": "nginx",
+      "weight": 1,
+      "kind": "depends"
     }
   ]
 }

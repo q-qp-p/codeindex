@@ -23,6 +23,8 @@ from analyzers import (
     ci_analyzer,
     schema_analyzer,
 )
+from analyzers.cross_lang_analyzer import find_api_boundaries
+from analyzers.monorepo_analyzer import detect_workspaces, assign_packages
 
 _SKIP = {
     "__pycache__", ".venv", "venv", "env", ".git",
@@ -94,6 +96,26 @@ def merge_links(target: dict, source: dict) -> None:
 
 _INFRA_TYPES = {"service", "pipeline", "database"}
 
+# Language → layer mapping
+_FRONTEND_LANGS = {"javascript", "typescript", "vue", "css", "scss", "less", "sass"}
+_BACKEND_LANGS  = {"python", "go", "ruby", "rust", "java", "kotlin", "php"}
+_INFRA_LANGS    = {"docker", "github-actions", "gitlab-ci", "sql", "prisma"}
+
+
+def assign_layer(node: dict) -> str:
+    ntype = node.get("type", "module")
+    if ntype in _INFRA_TYPES:
+        return "infrastructure"
+    lang = node.get("language", "")
+    if lang in _FRONTEND_LANGS:
+        return "frontend"
+    if lang in _BACKEND_LANGS:
+        return "backend"
+    if lang in _INFRA_LANGS:
+        return "infrastructure"
+    return "backend"   # default for unknown
+
+
 def link_kind(s_type: str, t_type: str) -> str:
     if s_type == "style" or t_type == "style":
         return "styles"
@@ -160,6 +182,21 @@ def analyze(root_path: str) -> dict:
             except Exception as e:
                 print(f"Warning: {lang} analyzer failed: {e}", file=sys.stderr)
 
+    # ── Post-processing ──────────────────────────────────────────────────────
+
+    # Assign layer (frontend / backend / infrastructure) to every node
+    for node in all_nodes:
+        node.setdefault("layer", assign_layer(node))
+
+    # Assign monorepo package names
+    try:
+        workspaces = detect_workspaces(root)
+        assign_packages(all_nodes, workspaces)
+        if workspaces:
+            meta_extra["workspaces"] = list(workspaces.values())
+    except Exception as e:
+        print(f"Warning: monorepo detection failed: {e}", file=sys.stderr)
+
     # Build links with semantic kind annotation
     node_type_map = {n["id"]: n.get("type", "module") for n in all_nodes}
     links = [
@@ -171,6 +208,15 @@ def analyze(root_path: str) -> dict:
         }
         for (s, t), w in all_links.items()
     ]
+
+    # Cross-language API boundary detection (Python routes ↔ JS fetch/axios)
+    try:
+        api_links = find_api_boundaries(root, all_nodes)
+        links.extend(api_links)
+        if api_links:
+            meta_extra["apiLinks"] = len(api_links)
+    except Exception as e:
+        print(f"Warning: cross-language analysis failed: {e}", file=sys.stderr)
 
     return {
         "meta": {

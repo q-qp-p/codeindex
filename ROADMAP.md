@@ -114,25 +114,33 @@ The core extension point is `analyze_repo.py`, which produces a language-agnosti
 
 ---
 
-## Phase 5 — Monorepo & Cross-language Intelligence
+## Phase 5 — Monorepo & Cross-language Intelligence ✅ COMPLETE
 
 **Goal:** Handle complex projects with multiple languages, unified into one visualization.
 
 ### Tasks
-- [ ] Single-pass language detection across entire repo
-- [ ] Merge graphs from multiple analyzers into one unified visualization
-- [ ] Cross-language boundary detection (e.g., Python API endpoint called by JS fetch)
-- [ ] Workspace/monorepo support:
-  - `pnpm workspaces`
-  - `nx.json` / Turborepo
-  - Poetry monorepos
-  - Lerna
-- [ ] UI layer/language filtering: show only frontend, only backend, only infra, or all
-- [ ] "Package map" view: visualize packages/workspaces as first-class nodes
+- [x] Cross-language boundary detection: Python API endpoint called by JS fetch/axios
+  - `analyzers/cross_lang_analyzer.py` — FastAPI/Flask/Django route detection
+  - `include_router(x.router, prefix="/y")` prefix resolution
+  - `fetch()`, `axios.get()`, `api.post()` frontend call extraction
+  - Path normalization (`{param}`, `:param`, `${var}` → `<p>`)
+  - Exact, suffix, and segment-overlap matching
+  - New link kind: `"api-call"` (orange edges)
+- [x] `node.layer` field: every node tagged `frontend` / `backend` / `infrastructure`
+- [x] Layer filter UI: Frontend / Backend / Infra / All toggle buttons in sidebar
+- [x] Workspace/monorepo support (`analyzers/monorepo_analyzer.py`):
+  - `pnpm-workspace.yaml`
+  - `package.json` workspaces (npm / yarn / yarn berry)
+  - `lerna.json`
+  - `nx.json` (apps/* and libs/* defaults)
+  - `turbo.json` (apps/* and packages/* defaults)
+- [x] `node.package` field: nodes inside a workspace tagged with their package name
+- [x] Package name shown in tooltip and node detail panel
 
 ### Success Criteria
-- A full-stack monorepo (Python API + React frontend) shows both sides in one graph
-- Can filter to see only the frontend or only the backend subgraph
+- ✅ A full-stack repo (Python API + React frontend) shows api-call edges between JS files and Python route files
+- ✅ Can filter to see only the frontend or only the backend subgraph
+- ✅ Monorepo packages identified and tagged on nodes
 
 ---
 

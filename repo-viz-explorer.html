@@ -648,7 +648,15 @@
       <div class="legend-item"><div class="legend-dot" style="background:var(--node-pipeline)"></div> CI/CD Job</div>
       <div class="legend-item"><div class="legend-dot" style="background:var(--node-database)"></div> DB Table / Model</div>
 
-      <h3 style="margin-top:16px">Languages</h3>
+      <h3 style="margin-top:16px">Layer Filter</h3>
+      <div id="layer-filter" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px">
+        <button class="layer-btn active" data-layer="all"    onclick="setLayerFilter('all')"           style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid var(--border);background:var(--accent);color:#000;cursor:pointer">All</button>
+        <button class="layer-btn"        data-layer="frontend"    onclick="setLayerFilter('frontend')"     style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--fg);cursor:pointer">Frontend</button>
+        <button class="layer-btn"        data-layer="backend"     onclick="setLayerFilter('backend')"      style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--fg);cursor:pointer">Backend</button>
+        <button class="layer-btn"        data-layer="infrastructure" onclick="setLayerFilter('infrastructure')" style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--fg);cursor:pointer">Infra</button>
+      </div>
+
+      <h3 style="margin-top:4px">Languages</h3>
       <div id="lang-legend" style="margin-bottom:12px">
         <div style="font-size:10px;color:var(--muted)">—</div>
       </div>
@@ -844,6 +852,41 @@ const LANG_COLOR_HEX = {
 // Active language filter — populated after data load
 let LANG_FILTER = new Set(["python", "javascript", "typescript", "vue", "css", "scss", "less"]);
 
+// Active layer filter — "all", "frontend", "backend", "infrastructure"
+let LAYER_FILTER = "all";
+
+function setLayerFilter(layer) {
+  LAYER_FILTER = layer;
+  document.querySelectorAll('.layer-btn').forEach(btn => {
+    const active = btn.dataset.layer === layer;
+    btn.style.background = active ? 'var(--accent)' : 'transparent';
+    btn.style.color = active ? '#000' : 'var(--fg)';
+  });
+  applyLayerFilter();
+}
+
+function applyLayerFilter() {
+  d3.selectAll('#graph-svg g g').style('display', d => {
+    if (!d) return null;
+    if (LAYER_FILTER !== 'all' && d.layer && d.layer !== LAYER_FILTER) return 'none';
+    if (d.language && !LANG_FILTER.has(d.language)) return 'none';
+    return null;
+  });
+  d3.selectAll('#graph-svg .link-line').style('display', function(l) {
+    const sn = NODES.find(n => n.id === nodeId(l.source));
+    const tn = NODES.find(n => n.id === nodeId(l.target));
+    if (sn) {
+      if (LAYER_FILTER !== 'all' && sn.layer && sn.layer !== LAYER_FILTER) return 'none';
+      if (sn.language && !LANG_FILTER.has(sn.language)) return 'none';
+    }
+    if (tn) {
+      if (LAYER_FILTER !== 'all' && tn.layer && tn.layer !== LAYER_FILTER) return 'none';
+      if (tn.language && !LANG_FILTER.has(tn.language)) return 'none';
+    }
+    return null;
+  });
+}
+
 function nodeColor(d) {
   // Fixed semantic types always use their type color
   const typeColors = {
@@ -948,17 +991,7 @@ function toggleLang(lang) {
 }
 
 function applyLangFilter() {
-  d3.selectAll('#graph-svg g g').style('display', d => {
-    if (!d || !d.language) return null;
-    return LANG_FILTER.has(d.language) ? null : 'none';
-  });
-  d3.selectAll('#graph-svg .link-line').style('display', function(l) {
-    const sn = NODES.find(n => n.id === nodeId(l.source));
-    const tn = NODES.find(n => n.id === nodeId(l.target));
-    if (sn && sn.language && !LANG_FILTER.has(sn.language)) return 'none';
-    if (tn && tn.language && !LANG_FILTER.has(tn.language)) return 'none';
-    return null;
-  });
+  applyLayerFilter();
 }
 
 async function loadGraph() {
@@ -983,6 +1016,7 @@ async function loadGraph() {
   updateStats();
   // Re-init all rendered views
   threeInit = false; treemapInit = false; matrixInit = false; infraInit = false;
+  setLayerFilter('all');
   initForceGraph();
   if (document.getElementById('three-panel').classList.contains('active')) initThree();
   if (document.getElementById('matrix-panel').classList.contains('active')) initMatrix();
@@ -1035,9 +1069,11 @@ function showTooltip(evt, node) {
   const langBadge = node.language
     ? `<span style="color:${LANG_COLOR_HEX[node.language]||'#888'};margin-left:4px">${node.language}</span>`
     : '';
+  const layerBadge = node.layer ? `<span style="opacity:0.6;margin-left:4px">${node.layer}</span>` : '';
+  const pkgBadge = node.package ? `<span style="color:var(--accent);margin-left:4px">${node.package}</span>` : '';
   tooltip.innerHTML = `
     <strong>${node.id}</strong>
-    <div class="t-type">${node.type}${langBadge}</div>
+    <div class="t-type">${node.type}${langBadge}${layerBadge}${pkgBadge}</div>
     <div>Connections: <b>${conns.length}</b></div>
     ${node.loc ? `<div>LOC: <b>${node.loc}</b></div>` : ''}
     ${node.imports ? `<div>Imports: <b>${node.imports}</b></div>` : ''}
@@ -1058,7 +1094,7 @@ function showNodeDetail(node) {
   panel.innerHTML = `
     <div class="node-detail">
       <div class="nd-title">${n.id}</div>
-      <div class="nd-meta">${n.type}${n.language ? ' · ' + n.language : ''}${n.framework ? ' · ' + n.framework : ''}${n.loc ? ' · ' + n.loc + ' LOC' : ''}${n.group !== undefined ? ' · group ' + n.group : ''}</div>
+      <div class="nd-meta">${n.type}${n.language ? ' · ' + n.language : ''}${n.framework ? ' · ' + n.framework : ''}${n.layer ? ' · <span style="opacity:0.7">' + n.layer + '</span>' : ''}${n.package ? ' · <span style="color:var(--accent)">' + n.package + '</span>' : ''}${n.loc ? ' · ' + n.loc + ' LOC' : ''}${n.group !== undefined ? ' · group ' + n.group : ''}</div>
       ${outgoing.length ? `<div class="nd-section">Imports (${outgoing.length})</div>
         <div class="nd-list">${outgoing.map(x => `<div class="nd-item">${x}</div>`).join('')}</div>` : ''}
       ${incoming.length ? `<div class="nd-section">Imported by (${incoming.length})</div>
@@ -1193,9 +1229,10 @@ function initForceGraph() {
     .attr('stroke', d => {
       const s = nodeId(d.source), t = nodeId(d.target);
       if (cycleEdges.has(`${s}→${t}`)) return '#ef4444';
-      if (d.kind === 'renders') return '#ec4899';
-      if (d.kind === 'styles')  return '#06b6d4';
-      if (d.kind === 'depends') return '#0ea5e9';
+      if (d.kind === 'renders')  return '#ec4899';
+      if (d.kind === 'styles')   return '#06b6d4';
+      if (d.kind === 'depends')  return '#0ea5e9';
+      if (d.kind === 'api-call') return '#f97316';
       return internalIds.has(t) ? '#00d4ff' : '#f59e0b';
     })
     .attr('marker-end', d => {
