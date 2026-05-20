@@ -1,0 +1,204 @@
+"""codeindex CLI entry point."""
+from __future__ import annotations
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+def _cmd_analyze(args: argparse.Namespace) -> None:
+    from codeindex.index import build
+    repo = args.repo
+    output = Path(args.output) if args.output else None
+
+    if args.watch:
+        try:
+            from watchdog.observers import Observer
+            from watchdog.events import FileSystemEventHandler
+        except ImportError:
+            print("watchdog not installed — run: pip install 'codeindex[watch]'", file=sys.stderr)
+            sys.exit(1)
+
+        import threading
+
+        WATCHED_EXTS = {
+            ".py", ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs",
+            ".rb", ".go", ".rs", ".java", ".kt", ".php",
+            ".yml", ".yaml", ".sql", ".prisma",
+        }
+        dest = output or (Path(repo).resolve() / "codeindex.json")
+
+        class _Watcher(FileSystemEventHandler):
+            def __init__(self):
+                self._timer = None
+
+            def _rebuild(self):
+                print("[watch] change detected, re-indexing…", file=sys.stderr)
+                build(repo, dest)
+
+            def on_modified(self, event):
+                if event.is_directory:
+                    return
+                if Path(event.src_path).suffix in WATCHED_EXTS:
+                    if self._timer:
+                        self._timer.cancel()
+                    self._timer = threading.Timer(1.0, self._rebuild)
+                    self._timer.start()
+
+        build(repo, dest)
+        observer = Observer()
+        observer.schedule(_Watcher(), repo, recursive=True)
+        observer.start()
+        print(f"[watch] watching {repo} — Ctrl+C to stop", file=sys.stderr)
+        try:
+            while True:
+                import time
+                time.sleep(1)
+        except KeyboardInterrupt:
+            observer.stop()
+        observer.join()
+    else:
+        build(repo, output)
+
+
+def _cmd_impact(args: argparse.Namespace) -> None:
+    from codeindex.index import load, find_index, INDEX_FILENAME
+    from codeindex.impact import compute_blast_radius
+    from codeindex.reporter import format_stdout, format_markdown
+
+    if args.index:
+        index_path = Path(args.index)
+    else:
+        index_path = find_index(Path(args.file).parent)
+        if not index_path:
+            index_path = find_index(Path.cwd())
+        if not index_path:
+            print(
+                f"No {INDEX_FILENAME} found. Run: codeindex analyze <repo>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    data = load(index_path)
+    node_ids = {n["id"] for n in data["nodes"]}
+
+    # Resolve file_id
+    fp = args.file
+    file_id = None
+    if fp in node_ids:
+        file_id = fp
+    else:
+        clean = fp.lstrip("./")
+        for nid in node_ids:
+            if nid.endswith(clean) or clean.endswith(nid):
+                file_id = nid
+                break
+
+    if not file_id:
+        print(f"File not found in index: {fp}", file=sys.stderr)
+        print("Available nodes (first 20):", file=sys.stderr)
+        for nid in sorted(node_ids)[:20]:
+            print(f"  {nid}", file=sys.stderr)
+        sys.exit(1)
+
+    blast_map = compute_blast_radius(data["nodes"], data["links"])
+    blast = blast_map[file_id]
+    total = len([n for n in data["nodes"] if n.get("type") != "import"])
+
+    if args.out:
+        report = format_markdown(file_id, blast, total)
+        Path(args.out).write_text(report)
+        print(f"Impact report written to {args.out}")
+    elif args.json:
+        print(json.dumps({
+            "file":                 file_id,
+            "blast_score":          blast["blast_score"],
+            "direct_dependents":    blast["direct_dependents"],
+            "transitive_dependents": blast["transitive_dependents"],
+            "direct_ids":           blast["direct_ids"],
+            "transitive_ids":       blast["transitive_ids"],
+        }, indent=2))
+    else:
+        print(format_stdout(file_id, blast, total))
+
+
+def _cmd_serve(args: argparse.Namespace) -> None:
+    if args.mcp:
+        from codeindex.mcp_server import serve
+        serve()
+    else:
+        from codeindex.viz_server import serve
+        output = Path(args.output) if getattr(args, "output", None) else None
+        serve(
+            repo_path=args.repo,
+            port=args.port,
+            watch=args.watch,
+            output=output,
+        )
+
+
+def _cmd_install_hook(args: argparse.Namespace) -> None:
+    from codeindex.hook import install
+    install(
+        repo_path=args.repo,
+        threshold=args.threshold,
+        strict=args.strict,
+        remove=args.remove,
+    )
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="codeindex",
+        description="Repo dependency analyzer with blast-radius impact scoring.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # ── analyze ────────────────────────────────────────────────────────────
+    p_analyze = sub.add_parser("analyze", help="Analyze a repo and write codeindex.json")
+    p_analyze.add_argument("repo", nargs="?", default=".", help="Path to repo root (default: .)")
+    p_analyze.add_argument("--output", help="Output path (default: <repo>/codeindex.json)")
+    p_analyze.add_argument("--watch", action="store_true", help="Re-index on file changes")
+
+    # ── impact ─────────────────────────────────────────────────────────────
+    p_impact = sub.add_parser("impact", help="Show blast-radius impact for a file")
+    p_impact.add_argument("file", help="File path to assess")
+    p_impact.add_argument("--index", help="Path to codeindex.json (auto-discovered if omitted)")
+    p_impact.add_argument("--out", help="Write markdown report to this file")
+    p_impact.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    # ── serve ──────────────────────────────────────────────────────────────
+    p_serve = sub.add_parser("serve", help="Serve the visualization UI or run as MCP server")
+    serve_mode = p_serve.add_mutually_exclusive_group()
+    serve_mode.add_argument("--viz", action="store_true", default=True, help="Serve visualization UI (default)")
+    serve_mode.add_argument("--mcp", action="store_true", help="Run as MCP stdio server")
+    p_serve.add_argument("--repo", default=".", help="Repo to analyze (viz mode)")
+    p_serve.add_argument("--port", type=int, default=8080, help="Port for viz server")
+    p_serve.add_argument("--watch", action="store_true", help="Watch for file changes (viz mode)")
+    p_serve.add_argument("--output", help="codeindex.json path override (viz mode)")
+
+    # ── install-hook ───────────────────────────────────────────────────────
+    p_hook = sub.add_parser("install-hook", help="Install a pre-commit hook for impact warnings")
+    p_hook.add_argument("--repo", default=".", help="Repo root (default: .)")
+    p_hook.add_argument("--threshold", type=int, default=10, help="Blast score warning threshold (default: 10)")
+    p_hook.add_argument("--strict", action="store_true", help="Block commit when threshold exceeded")
+    p_hook.add_argument("--remove", action="store_true", help="Remove the installed hook")
+
+    return parser
+
+
+def main() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    dispatch = {
+        "analyze":      _cmd_analyze,
+        "impact":       _cmd_impact,
+        "serve":        _cmd_serve,
+        "install-hook": _cmd_install_hook,
+    }
+    dispatch[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

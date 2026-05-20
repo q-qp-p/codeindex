@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Repo Visualization Explorer</title>
+<title>codeindex</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
@@ -617,7 +617,7 @@
 
 <div class="app">
   <header>
-    <div class="logo">REPO·VIZ EXPLORER</div>
+    <div class="logo">CODEINDEX</div>
     <div class="header-meta" id="header-meta">— / — Python / — modules · — nodes · — edges</div>
     <button class="refresh-btn" id="refresh-btn" title="Re-analyze repo (R)">
       <span class="r-icon">⟳</span> REFRESH
@@ -638,17 +638,9 @@
   <div class="main">
     <aside class="sidebar">
       <h3>Node Types</h3>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--node-module)"></div> Module / File</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--node-component)"></div> Component</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--node-hook)"></div> Hook</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--node-route)"></div> Route</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--node-store)"></div> Store / Context</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--node-style)"></div> Stylesheet</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--node-import)"></div> External Import</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--node-config)"></div> Config / Data</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--node-service)"></div> Service (Docker)</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--node-pipeline)"></div> CI/CD Job</div>
-      <div class="legend-item"><div class="legend-dot" style="background:var(--node-database)"></div> DB Table / Model</div>
+      <div id="type-legend" style="margin-bottom:12px">
+        <div style="font-size:10px;color:var(--muted)">—</div>
+      </div>
 
       <h3 style="margin-top:16px">Layer Filter</h3>
       <div id="layer-filter" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px">
@@ -857,6 +849,9 @@ const LANG_COLOR_HEX = {
 // Active language filter — populated after data load
 let LANG_FILTER = new Set(["python", "javascript", "typescript", "vue", "css", "scss", "less"]);
 
+// Active node type filter
+let TYPE_FILTER = new Set();
+
 // Active layer filter — "all", "frontend", "backend", "infrastructure"
 let LAYER_FILTER = "all";
 
@@ -875,6 +870,7 @@ function applyLayerFilter() {
     if (!d) return null;
     if (LAYER_FILTER !== 'all' && d.layer && d.layer !== LAYER_FILTER) return 'none';
     if (d.language && !LANG_FILTER.has(d.language)) return 'none';
+    if (d.type && TYPE_FILTER.size > 0 && !TYPE_FILTER.has(d.type)) return 'none';
     return null;
   });
   d3.selectAll('#graph-svg .link-line').style('display', function(l) {
@@ -883,10 +879,12 @@ function applyLayerFilter() {
     if (sn) {
       if (LAYER_FILTER !== 'all' && sn.layer && sn.layer !== LAYER_FILTER) return 'none';
       if (sn.language && !LANG_FILTER.has(sn.language)) return 'none';
+      if (sn.type && TYPE_FILTER.size > 0 && !TYPE_FILTER.has(sn.type)) return 'none';
     }
     if (tn) {
       if (LAYER_FILTER !== 'all' && tn.layer && tn.layer !== LAYER_FILTER) return 'none';
       if (tn.language && !LANG_FILTER.has(tn.language)) return 'none';
+      if (tn.type && TYPE_FILTER.size > 0 && !TYPE_FILTER.has(tn.type)) return 'none';
     }
     return null;
   });
@@ -951,7 +949,47 @@ function updateStats() {
   document.getElementById('header-meta').textContent =
     `${META.root} | ${detectedLangs}${frameworkLabel} | ${modules} modules · ${NODES.length} nodes · ${LINKS.length} edges`;
 
+  updateTypeLegend();
   updateLangLegend();
+}
+
+function updateTypeLegend() {
+  const types = [...new Set(NODES.map(n => n.type).filter(Boolean))];
+  const container = document.getElementById('type-legend');
+  if (!types.length) {
+    container.innerHTML = '<div style="font-size:10px;color:var(--muted)">—</div>';
+    return;
+  }
+  // Initialize TYPE_FILTER with all types on first load
+  if (TYPE_FILTER.size === 0) {
+    types.forEach(t => TYPE_FILTER.add(t));
+  }
+
+  const TYPE_LABELS = {
+    module: 'Module / File',
+    component: 'Component',
+    hook: 'Hook',
+    route: 'Route',
+    store: 'Store / Context',
+    style: 'Stylesheet',
+    service: 'Service (Docker)',
+    pipeline: 'CI/CD Job',
+    database: 'DB Table / Model',
+    import: 'External Import',
+    config: 'Config / Data',
+    class: 'Class',
+    function: 'Function',
+  };
+  container.innerHTML = types.map(type => {
+    const active = TYPE_FILTER.has(type);
+    const color = TYPE_COLOR_HEX[type] || '#888';
+    const label = TYPE_LABELS[type] || type;
+    return `<div class="legend-item type-toggle" data-type="${type}"
+      style="cursor:pointer;opacity:${active ? 1 : 0.4};transition:opacity .2s"
+      onclick="toggleType('${type}')">
+      <div class="legend-dot" style="background:${color}"></div>${label}
+    </div>`;
+  }).join('');
 }
 
 function updateLangLegend() {
@@ -995,7 +1033,22 @@ function toggleLang(lang) {
   applyLangFilter();
 }
 
+function toggleType(type) {
+  if (TYPE_FILTER.has(type)) {
+    // Don't allow hiding all types
+    if (TYPE_FILTER.size > 1) TYPE_FILTER.delete(type);
+  } else {
+    TYPE_FILTER.add(type);
+  }
+  updateTypeLegend();
+  applyTypeFilter();
+}
+
 function applyLangFilter() {
+  applyLayerFilter();
+}
+
+function applyTypeFilter() {
   applyLayerFilter();
 }
 
@@ -1215,12 +1268,23 @@ function initForceGraph() {
   document.getElementById('zoom-out').onclick = () => svg.transition().call(zoom.scaleBy, 0.77);
   document.getElementById('reset-zoom').onclick = () => svg.transition().call(zoom.transform, d3.zoomIdentity);
 
-  const nodes = NODES.map(d => ({ ...d }));
-  const links = LINKS.map(d => ({ ...d }));
+  // Apply filters
+  let filteredNodes = NODES.map(d => ({ ...d }));
+  if (TYPE_FILTER.size > 0) {
+    filteredNodes = filteredNodes.filter(n => TYPE_FILTER.has(n.type));
+  }
+  if (LAYER_FILTER !== 'all') {
+    filteredNodes = filteredNodes.filter(n => !n.layer || n.layer === LAYER_FILTER);
+  }
+  const filteredIds = new Set(filteredNodes.map(n => n.id));
+  let filteredLinks = LINKS.filter(l => filteredIds.has(nodeId(l.source)) && filteredIds.has(nodeId(l.target))).map(d => ({ ...d }));
+
+  const nodes = filteredNodes;
+  const links = filteredLinks;
   const cycleEdges = findCycles(nodes, links);
 
   // Internal node ids set
-  const internalIds = new Set(NODES.filter(n => n.type !== 'import').map(n => n.id));
+  const internalIds = new Set(nodes.filter(n => n.type !== 'import').map(n => n.id));
 
   // Group centroid positions for cluster mode
   const groups = {};
@@ -1406,9 +1470,18 @@ function initThree() {
   ptLight.position.set(50, 100, 80);
   scene.add(ptLight);
 
+  // Apply type and layer filters
+  let filteredNodes = NODES;
+  if (TYPE_FILTER.size > 0) {
+    filteredNodes = filteredNodes.filter(n => TYPE_FILTER.has(n.type));
+  }
+  if (LAYER_FILTER !== 'all') {
+    filteredNodes = filteredNodes.filter(n => !n.layer || n.layer === LAYER_FILTER);
+  }
+
   // Build group → dir mapping for legend
   const dirGroups = {};
-  NODES.forEach(n => {
+  filteredNodes.forEach(n => {
     if (!(n.group in dirGroups)) {
       const dir = n.id.includes('/') ? n.id.split('/')[0] + '/' : (n.type === 'import' ? 'external' : 'root');
       dirGroups[n.group] = dir;
@@ -1418,7 +1491,7 @@ function initThree() {
   // 3D positions by group shells — use sequential index so group:9000 (external) doesn't fly off to infinity
   const pos3D = {};
   const byGroup = {};
-  NODES.forEach(n => { if (!byGroup[n.group]) byGroup[n.group] = []; byGroup[n.group].push(n); });
+  filteredNodes.forEach(n => { if (!byGroup[n.group]) byGroup[n.group] = []; byGroup[n.group].push(n); });
   const groupKeys = Object.keys(byGroup).sort((a, b) => parseInt(a) - parseInt(b));
   groupKeys.forEach((grp, idx) => {
     const gnodes = byGroup[grp];
@@ -1459,7 +1532,7 @@ function initThree() {
   }
 
   const meshes = [];
-  NODES.forEach(n => {
+  filteredNodes.forEach(n => {
     const col = groupColor(n.group);
     const geo = new THREE.SphereGeometry(Math.sqrt(n.size||40) * 0.32 + 2, 16, 16);
     const mat = new THREE.MeshPhongMaterial({
@@ -1488,10 +1561,13 @@ function initThree() {
     scene.add(gm);
   });
 
+  // Filter links to only show between visible nodes
+  const visibleIds = new Set(filteredNodes.map(n => n.id));
   LINKS.forEach(l => {
+    if (!visibleIds.has(nodeId(l.source)) || !visibleIds.has(nodeId(l.target))) return;
     const src = pos3D[nodeId(l.source)], tgt = pos3D[nodeId(l.target)];
     if (!src || !tgt) return;
-    const srcNode = NODES.find(n => n.id === nodeId(l.source));
+    const srcNode = filteredNodes.find(n => n.id === nodeId(l.source));
     const col = groupColor(srcNode?.group ?? 0);
     const geo = new THREE.BufferGeometry().setFromPoints([src, tgt]);
     const mat = new THREE.LineBasicMaterial({ color: new THREE.Color(col), transparent: true, opacity: 0.18 + (l.weight||1)*0.04 });
@@ -1562,6 +1638,10 @@ let matrixInit = false;
 function buildMatrix(sortBy = 'name') {
   const INTERNAL_TYPES = new Set(['module','component','hook','route','store','style','config','class','function']);
   let modules = NODES.filter(n => INTERNAL_TYPES.has(n.type));
+  // Apply type filter
+  if (TYPE_FILTER.size > 0) {
+    modules = modules.filter(n => TYPE_FILTER.has(n.type));
+  }
   const connCount = id => LINKS.filter(l => nodeId(l.source) === id || nodeId(l.target) === id).length;
 
   if (sortBy === 'name') modules.sort((a, b) => a.id.localeCompare(b.id));
@@ -1634,6 +1714,8 @@ function buildTreemapData(sizeBy = 'loc') {
   const connCount = id => LINKS.filter(l => nodeId(l.source) === id || nodeId(l.target) === id).length;
   const dirMap = {};
   NODES.forEach(n => {
+    // Apply type filter
+    if (TYPE_FILTER.size > 0 && !TYPE_FILTER.has(n.type)) return;
     const dir = n.type === 'import' ? '__external__'
       : n.id.includes('/') ? n.id.split('/')[0]
       : '__root__';
@@ -1796,7 +1878,11 @@ function buildInfraGraph() {
   const svgEl = document.getElementById('infra-svg');
   while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
 
-  const infraNodes = NODES.filter(n => INFRA_TYPES.has(n.type));
+  let infraNodes = NODES.filter(n => INFRA_TYPES.has(n.type));
+  // Apply type filter
+  if (TYPE_FILTER.size > 0) {
+    infraNodes = infraNodes.filter(n => TYPE_FILTER.has(n.type));
+  }
   const infraIds   = new Set(infraNodes.map(n => n.id));
   const infraLinks = LINKS.filter(l => infraIds.has(nodeId(l.source)) && infraIds.has(nodeId(l.target)));
 

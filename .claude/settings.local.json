@@ -5,7 +5,19 @@
       "Bash(python3 -c \"import json; d=json.load\\(open\\(''/tmp/test_graph.json''\\)\\); print\\(''meta:'', d[''meta'']\\); print\\(''nodes:'', len\\(d[''nodes'']\\)\\); print\\(''links:'', len\\(d[''links'']\\)\\)\")",
       "Bash(python3 -c \"import json; d=json.load\\(open\\(''/tmp/test_graph.json''\\)\\); print\\(''meta:'', d[''meta'']\\); print\\(''nodes:'', len\\(d[''nodes'']\\)\\); print\\(''links:'', len\\(d[''links'']\\)\\); print\\(''sample nodes:'', [n[''id''] for n in d[''nodes''][:5]]\\)\")",
       "Bash(python3:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(find /Users/david/Development/scheidydudes-github-repos -maxdepth 3 \\\\\\(-name docker-compose.yml -o -name docker-compose.yaml -o -name *.prisma \\\\\\))",
+      "Bash(head -10 echo --- find /Users/david/Development/scheidydudes-github-repos -maxdepth 4 -path */.github/workflows/*.yml)",
+      "Bash(head -8 echo --- find /Users/david/Development/scheidydudes-github-repos -maxdepth 3 -name *.sql)",
+      "Bash(mkdir -p /Users/david/Development/scheidydudes-github-repos/repo-vizualizer/codeindex/analyzers)",
+      "Bash(mkdir -p /Users/david/Development/scheidydudes-github-repos/repo-vizualizer/viz)",
+      "Bash(cp /Users/david/Development/scheidydudes-github-repos/repo-vizualizer/analyzers/*.py /Users/david/Development/scheidydudes-github-repos/repo-vizualizer/codeindex/analyzers/)",
+      "Bash(cp /Users/david/Development/scheidydudes-github-repos/repo-vizualizer/repo-viz-explorer.html /Users/david/Development/scheidydudes-github-repos/repo-vizualizer/viz/explorer.html)",
+      "Bash(pip install *)",
+      "Bash(codeindex *)"
     ]
   }
 }

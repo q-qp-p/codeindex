@@ -1,41 +1,21 @@
-#!/usr/bin/env python3
-"""
-analyze_repo.py — Multi-language repo analyzer (dispatcher).
-Detects languages present in a repo and delegates to per-language plugins.
-
-Usage: python analyze_repo.py ./myapp [--output repo_graph.json]
-"""
+"""Dispatcher: detect languages, delegate to per-language analyzers."""
 import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from analyzers import (
-    python_analyzer,
-    js_analyzer,
-    css_analyzer,
-    go_analyzer,
-    ruby_analyzer,
-    rust_analyzer,
-    java_analyzer,
-    php_analyzer,
-    docker_analyzer,
-    ci_analyzer,
-    schema_analyzer,
+from codeindex.analyzers import (
+    python_analyzer, js_analyzer, css_analyzer, go_analyzer,
+    ruby_analyzer, rust_analyzer, java_analyzer, php_analyzer,
+    docker_analyzer, ci_analyzer, schema_analyzer,
 )
-from analyzers.cross_lang_analyzer import find_api_boundaries
-from analyzers.monorepo_analyzer import detect_workspaces, assign_packages
+from codeindex.analyzers.cross_lang_analyzer import find_api_boundaries
+from codeindex.analyzers.monorepo_analyzer import detect_workspaces, assign_packages
 
 _SKIP = {
     "__pycache__", ".venv", "venv", "env", ".git",
     "node_modules", "dist", "build", ".next",
     "target", "vendor", ".bundle",
 }
-
-
-def _has_files(root: Path, patterns: list, skip_dirs: set = None) -> bool:
-    skip = skip_dirs or _SKIP
-    return any(not any(part in skip for part in p.parts) for p in root.rglob(patterns[0]))
 
 
 def _any_match(root: Path, globs: list) -> bool:
@@ -47,45 +27,30 @@ def _any_match(root: Path, globs: list) -> bool:
 
 def detect_languages(root: Path) -> list:
     langs = []
-
     if _any_match(root, ["*.py"]):
         langs.append("python")
-
-    js_signals = ["*.js", "*.ts", "*.jsx", "*.tsx", "*.mjs", "*.vue"]
-    if (root / "package.json").exists() or _any_match(root, js_signals):
+    if (root / "package.json").exists() or _any_match(root, ["*.js", "*.ts", "*.jsx", "*.tsx", "*.mjs", "*.vue"]):
         langs.append("javascript")
-
-    css_signals = ["*.css", "*.scss", "*.sass", "*.less", "*.styl"]
-    if _any_match(root, css_signals):
+    if _any_match(root, ["*.css", "*.scss", "*.sass", "*.less", "*.styl"]):
         langs.append("css")
-
     if (root / "go.mod").exists() or _any_match(root, ["*.go"]):
         langs.append("go")
-
     if (root / "Gemfile").exists() or _any_match(root, ["*.rb"]):
         langs.append("ruby")
-
     if (root / "Cargo.toml").exists() or _any_match(root, ["*.rs"]):
         langs.append("rust")
-
     if _any_match(root, ["*.java", "*.kt", "*.kts"]):
         langs.append("java")
-
     if (root / "composer.json").exists() or _any_match(root, ["*.php"]):
         langs.append("php")
-
-    # Infrastructure
     compose_names = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]
     if any((root / n).exists() for n in compose_names) or _any_match(root, ["Dockerfile*"]):
         langs.append("docker")
-
     if (root / ".github" / "workflows").exists() or \
        (root / ".gitlab-ci.yml").exists() or (root / ".gitlab-ci.yaml").exists():
         langs.append("ci")
-
     if _any_match(root, ["*.sql", "*.prisma"]):
         langs.append("schema")
-
     return langs
 
 
@@ -94,39 +59,11 @@ def merge_links(target: dict, source: dict) -> None:
         target[k] = target.get(k, 0) + v
 
 
-_INFRA_TYPES = {"service", "pipeline", "database"}
-
-# Language → layer mapping
+_INFRA_TYPES   = {"service", "pipeline", "database"}
 _FRONTEND_LANGS = {"javascript", "typescript", "vue", "css", "scss", "less", "sass"}
 _BACKEND_LANGS  = {"python", "go", "ruby", "rust", "java", "kotlin", "php"}
 _INFRA_LANGS    = {"docker", "github-actions", "gitlab-ci", "sql", "prisma"}
 
-
-def assign_layer(node: dict) -> str:
-    ntype = node.get("type", "module")
-    if ntype in _INFRA_TYPES:
-        return "infrastructure"
-    lang = node.get("language", "")
-    if lang in _FRONTEND_LANGS:
-        return "frontend"
-    if lang in _BACKEND_LANGS:
-        return "backend"
-    if lang in _INFRA_LANGS:
-        return "infrastructure"
-    return "backend"   # default for unknown
-
-
-def link_kind(s_type: str, t_type: str) -> str:
-    if s_type == "style" or t_type == "style":
-        return "styles"
-    if s_type in _INFRA_TYPES or t_type in _INFRA_TYPES:
-        return "depends"
-    if s_type in {"component", "route"} and t_type in {"component", "route"}:
-        return "renders"
-    return "imports"
-
-
-# Maps language id → analyzer module
 _ANALYZERS = {
     "python":     python_analyzer,
     "javascript": js_analyzer,
@@ -142,6 +79,30 @@ _ANALYZERS = {
 }
 
 
+def assign_layer(node: dict) -> str:
+    ntype = node.get("type", "module")
+    if ntype in _INFRA_TYPES:
+        return "infrastructure"
+    lang = node.get("language", "")
+    if lang in _FRONTEND_LANGS:
+        return "frontend"
+    if lang in _BACKEND_LANGS:
+        return "backend"
+    if lang in _INFRA_LANGS:
+        return "infrastructure"
+    return "backend"
+
+
+def link_kind(s_type: str, t_type: str) -> str:
+    if s_type == "style" or t_type == "style":
+        return "styles"
+    if s_type in _INFRA_TYPES or t_type in _INFRA_TYPES:
+        return "depends"
+    if s_type in {"component", "route"} and t_type in {"component", "route"}:
+        return "renders"
+    return "imports"
+
+
 def analyze(root_path: str) -> dict:
     root = Path(root_path).resolve()
     if not root.exists():
@@ -151,13 +112,13 @@ def analyze(root_path: str) -> dict:
     if not langs:
         print(f"Warning: no supported languages detected in {root}", file=sys.stderr)
 
-    group_map    = {}
-    all_nodes    = []
-    all_links    = {}
-    ext_seen     = set()
-    total_files  = 0
-    total_loc    = 0
-    meta_extra   = {}
+    group_map   = {}
+    all_nodes   = []
+    all_links   = {}
+    ext_seen    = set()
+    total_files = 0
+    total_loc   = 0
+    meta_extra  = {}
 
     def add_results(nodes, ext_nodes, links_map, meta):
         nonlocal total_files, total_loc
@@ -177,18 +138,13 @@ def analyze(root_path: str) -> dict:
         analyzer = _ANALYZERS.get(lang)
         if analyzer:
             try:
-                result = analyzer.analyze(root, group_map)
-                add_results(*result)
+                add_results(*analyzer.analyze(root, group_map))
             except Exception as e:
                 print(f"Warning: {lang} analyzer failed: {e}", file=sys.stderr)
 
-    # ── Post-processing ──────────────────────────────────────────────────────
-
-    # Assign layer (frontend / backend / infrastructure) to every node
     for node in all_nodes:
         node.setdefault("layer", assign_layer(node))
 
-    # Assign monorepo package names
     try:
         workspaces = detect_workspaces(root)
         assign_packages(all_nodes, workspaces)
@@ -197,7 +153,6 @@ def analyze(root_path: str) -> dict:
     except Exception as e:
         print(f"Warning: monorepo detection failed: {e}", file=sys.stderr)
 
-    # Build links with semantic kind annotation
     node_type_map = {n["id"]: n.get("type", "module") for n in all_nodes}
     links = [
         {
@@ -209,7 +164,6 @@ def analyze(root_path: str) -> dict:
         for (s, t), w in all_links.items()
     ]
 
-    # Cross-language API boundary detection (Python routes ↔ JS fetch/axios)
     try:
         api_links = find_api_boundaries(root, all_nodes)
         links.extend(api_links)
@@ -229,27 +183,3 @@ def analyze(root_path: str) -> dict:
         "nodes": all_nodes,
         "links": links,
     }
-
-
-def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="Analyze a repo and emit repo_graph.json")
-    parser.add_argument("repo", help="Path to repo root")
-    parser.add_argument("--output", default="repo_graph.json", help="Output JSON file")
-    args = parser.parse_args()
-
-    print(f"Analyzing {args.repo} …", file=sys.stderr)
-    data = analyze(args.repo)
-    out  = Path(args.output)
-    out.write_text(json.dumps(data, indent=2))
-    meta      = data["meta"]
-    langs_str = ", ".join(meta.get("languages", ["unknown"]))
-    print(
-        f"Done. {meta['total_files']} files, {meta['total_loc']} LOC "
-        f"[{langs_str}] → {out}",
-        file=sys.stderr,
-    )
-
-
-if __name__ == "__main__":
-    main()

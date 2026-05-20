@@ -1,107 +1,173 @@
-# Repo Viz Explorer
+# codeindex
 
-An interactive visualization tool for exploring repository structure across **12+ languages**. Point it at any project — Python, JavaScript/TypeScript, Go, Ruby, Rust, Java, PHP, and more — and get live, multi-mode dependency graphs rendered in your browser. No build step, no npm, no third-party Python packages required.
+Repo dependency analyzer with **blast-radius impact scoring** for AI-assisted development.
 
-![Languages](https://img.shields.io/badge/languages-12%2B-00d4ff?style=flat-square) ![Views](https://img.shields.io/badge/views-5%20modes-a855f7?style=flat-square) ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue?style=flat-square) ![Zero required deps](https://img.shields.io/badge/deps-stdlib%20only-10b981?style=flat-square)
+Point it at any project — Python, JavaScript/TypeScript, Go, Ruby, Rust, Java, PHP, and more — and get:
+
+- A `codeindex.json` dependency index written directly into your repo
+- Per-file blast-radius scores (how many files break if this one changes)
+- Four ways to consume the data: CLI, markdown report, MCP server, pre-commit hook
+- An interactive visualization UI (2D/3D graphs, dependency matrix, treemap)
+
+No build step. No npm. Pure Python stdlib — zero required dependencies.
 
 ---
 
-## Features
+## Install
 
-- **5 visualization modes** — 2D force graph, 3D network, dependency matrix, treemap, and infrastructure graph
-- **12+ languages** — Python, JavaScript, TypeScript, Vue, CSS/SCSS, Go, Ruby, Rust, Java, Kotlin, PHP, SQL, Prisma, Docker, GitHub Actions, GitLab CI
-- **Framework detection** — React, Vue, Next.js, Nuxt, Angular, Svelte, Rails, Laravel, Spring, and more
-- **Semantic node types** — module, component, hook, route, store, style, service, pipeline, database
-- **Cross-language API edges** — detects FastAPI/Flask/Django routes called by frontend `fetch`/`axios` — shown as orange edges
-- **Layer filter** — show only Frontend, Backend, or Infrastructure nodes in one click
-- **Monorepo support** — detects pnpm workspaces, npm/yarn workspaces, Lerna, Nx, Turborepo; tags nodes with their package name
-- **Infrastructure graph** — dedicated tab showing Docker services, CI/CD jobs, and database tables as a dependency graph
-- **Language filter** — toggle individual languages on/off in the force graph
-- **Cycle detection** — circular import pairs highlighted in red automatically
-- **Search & filter** — type to highlight a module and its neighbors
-- **Node detail panel** — click any node to see type, language, layer, package, LOC, imports, and imported-by
-- **Cluster mode** — group nodes by directory in the force graph
-- **Export** — download the 2D graph as SVG or the 3D view as PNG
-- **Auto-refresh** — `--watch` mode re-analyzes on every file change
-- **Keyboard shortcuts** — `1`–`5` switch tabs, `F` focuses search, `R` refreshes
+```bash
+pip install codeindex
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/scheidydudes/codeindex
+cd codeindex
+pip install -e .
+```
 
 ---
 
 ## Quickstart
 
 ```bash
-git clone <this-repo>
-cd repo-viz-explorer
+# Build the index (writes codeindex.json into your repo)
+codeindex analyze ./myapp
 
-# Analyze any project and serve the UI
-python server.py --repo /path/to/your/project
+# See blast radius for a file before touching it
+codeindex impact src/auth.py
 
-# Open in browser
+# Launch the visualization UI
+codeindex serve --viz --repo ./myapp
 open http://localhost:8080
 ```
 
-No `pip install`, no npm, no build step.
+---
+
+## Commands
+
+### `codeindex analyze`
+
+```bash
+codeindex analyze [REPO_PATH] [--output PATH] [--watch]
+```
+
+Analyzes the repo and writes `codeindex.json` to the repo root. Detects 12+ languages automatically.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `REPO_PATH` | `.` | Path to repo root |
+| `--output` | `<repo>/codeindex.json` | Override output path |
+| `--watch` | off | Re-index on file changes (requires `watchdog`) |
+
+---
+
+### `codeindex impact`
+
+```bash
+codeindex impact FILE [--index PATH] [--out FILE] [--json]
+```
+
+Shows the blast-radius impact for a specific file: direct dependents, transitive dependents, blast score, and risk level.
+
+```
+Impact: src/auth.py
+Blast Score: 8.5  (2 direct · 7 transitive)  [HIGH]
+
+Direct dependents (2)
+  src/api.py
+  src/middleware.py
+
+Transitive dependents (5 additional)
+  src/main.py  ← src/api.py
+  src/app.py   ← src/middleware.py
+  ...
+
+Risk: HIGH — affects 7/42 files (16.7% of codebase)
+```
+
+**Blast score formula:** `direct + (0.5 × transitive)`
+
+| Flag | Description |
+|------|-------------|
+| `--index PATH` | Path to `codeindex.json` (auto-discovered if omitted) |
+| `--out FILE` | Write a markdown report to this file |
+| `--json` | Output raw JSON |
+
+---
+
+### `codeindex serve`
+
+```bash
+codeindex serve --viz [--repo PATH] [--port PORT] [--watch]
+codeindex serve --mcp
+```
+
+`--viz` launches an interactive visualization UI in your browser (5 modes: 2D force graph, 3D network, dependency matrix, treemap, infrastructure graph).
+
+`--mcp` starts a stdio MCP server that exposes codeindex tools directly to Claude and other MCP clients.
+
+**MCP tools:**
+
+| Tool | Description |
+|------|-------------|
+| `analyze_repo` | Build or refresh the index |
+| `get_impact` | Blast-radius report for a file |
+| `get_dependencies` | imports + imported-by for a file |
+| `get_high_blast_files` | All files above a blast score threshold |
+
+**Claude Code MCP config** (`.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "codeindex": {
+      "command": "codeindex",
+      "args": ["serve", "--mcp"]
+    }
+  }
+}
+```
+
+---
+
+### `codeindex install-hook`
+
+```bash
+codeindex install-hook [--repo PATH] [--threshold N] [--strict] [--remove]
+```
+
+Installs a git pre-commit hook that warns when staged files exceed the blast score threshold.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--threshold N` | `10` | Blast score above which to warn |
+| `--strict` | off | Block the commit instead of just warning |
+| `--remove` | — | Uninstall the hook |
 
 ---
 
 ## Supported Languages
 
-| Language | Detection Signal | What's Analyzed |
-|----------|-----------------|-----------------|
-| Python | `*.py` files | AST imports, type detection |
-| JavaScript / TypeScript | `package.json` or `*.js/ts/jsx/tsx` | ES module imports, `require()` |
-| Vue | `*.vue` files | `<script>` block imports, SFC detection |
-| CSS / SCSS / Less | `*.css/scss/sass/less` | `@import`, `@use`, `@forward` |
-| Go | `go.mod` or `*.go` | Package-level nodes, `import` blocks |
-| Ruby | `Gemfile` or `*.rb` | `require`, `require_relative`, `autoload` |
-| Rust | `Cargo.toml` or `*.rs` | `mod`, `use crate::` |
-| Java / Kotlin | `*.java/kt` | FQN imports, wildcard imports |
-| PHP | `composer.json` or `*.php` | PSR-4 namespace resolution, `use` |
-| Docker | `docker-compose.yml` / `Dockerfile` | Services, `depends_on` edges |
-| CI/CD | `.github/workflows/` / `.gitlab-ci.yml` | Jobs, `needs:` dependency edges |
-| SQL / Prisma | `*.sql` / `*.prisma` | Tables/models, foreign key edges |
+| Language | What's analyzed |
+|----------|----------------|
+| Python | AST imports, type detection |
+| JavaScript / TypeScript | ES modules, `require()`, framework detection |
+| Vue | SFC `<script>` imports |
+| CSS / SCSS / Less | `@import`, `@use`, `@forward` |
+| Go | Package-level nodes, `import` blocks |
+| Ruby | `require`, `require_relative`, `autoload` |
+| Rust | `mod`, `use crate::` |
+| Java / Kotlin | FQN imports, wildcard imports |
+| PHP | PSR-4 namespace resolution |
+| Docker | Services, `depends_on` edges |
+| CI/CD | GitHub Actions + GitLab CI jobs, `needs:` edges |
+| SQL / Prisma | Tables/models, foreign key edges |
 
 ---
 
-## Usage
-
-### `server.py`
-
-```
-python server.py [--repo PATH] [--port PORT] [--watch]
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--repo` | `.` | Path to the project to analyze |
-| `--port` | `8080` | Port to serve on |
-| `--watch` | off | Auto-re-analyze when files change (requires `watchdog`) |
-
-```bash
-# With file watching
-pip install watchdog
-python server.py --repo ./myapp --watch
-
-# Via environment variable
-REPO_PATH=./myapp python server.py
-```
-
-### `analyze_repo.py`
-
-Run the analyzer standalone to produce `repo_graph.json` without starting the server:
-
-```bash
-python analyze_repo.py ./myapp
-# → writes repo_graph.json
-
-python analyze_repo.py ./myapp --output /tmp/graph.json
-```
-
----
-
-## Output format
-
-`analyze_repo.py` emits a single JSON file:
+## `codeindex.json` schema
 
 ```json
 {
@@ -109,113 +175,32 @@ python analyze_repo.py ./myapp --output /tmp/graph.json
     "root": "myapp/",
     "total_files": 60,
     "total_loc": 4085,
-    "languages": ["python", "javascript", "css", "docker"],
-    "apiLinks": 2
+    "languages": ["python", "javascript"]
   },
   "nodes": [
     {
-      "id": "frontend/src/services/authService.js",
+      "id": "src/auth.py",
       "type": "module",
-      "language": "javascript",
-      "layer": "frontend",
-      "package": "@myapp/frontend",
-      "loc": 42,
-      "group": 3
+      "language": "python",
+      "layer": "backend",
+      "loc": 142,
+      "imports": ["src/db.py"],
+      "imported_by": ["src/api.py", "src/middleware.py"],
+      "direct_dependents": 2,
+      "transitive_dependents": 7,
+      "blast_score": 5.5
     }
   ],
   "links": [
-    { "source": "frontend/src/services/authService.js", "target": "backend/routers/auth.py", "weight": 1, "kind": "api-call" }
+    {
+      "source": "src/api.py",
+      "target": "src/auth.py",
+      "weight": 1,
+      "kind": "imports"
+    }
   ]
 }
 ```
-
-### Node fields
-
-| Field | Values | Meaning |
-|-------|--------|---------|
-| `type` | `module`, `component`, `hook`, `route`, `store`, `style`, `service`, `pipeline`, `database`, `import`, `config` | Semantic node type |
-| `language` | `python`, `javascript`, `typescript`, `vue`, `css`, `go`, `ruby`, `rust`, `java`, `kotlin`, `php`, … | Source language |
-| `layer` | `frontend`, `backend`, `infrastructure` | Architectural layer |
-| `package` | string or `""` | Workspace/monorepo package name |
-| `framework` | `react`, `vue`, `next`, `rails`, … or `null` | Detected framework |
-
-### Link kinds
-
-| Kind | Color | Meaning |
-|------|-------|---------|
-| `imports` | cyan | Standard import / require |
-| `renders` | pink | Component renders component |
-| `styles` | teal | File imports a stylesheet |
-| `depends` | sky blue | Infrastructure dependency |
-| `api-call` | orange | Frontend HTTP call → backend route |
-| *(cycle)* | red | Circular import |
-
----
-
-## Visualization modes
-
-### 1 — 2D Force Graph
-Force-directed layout using D3. Drag nodes, scroll to zoom. Edges colored by kind (see table above).
-
-- **Layer Filter** (sidebar) — show only Frontend, Backend, or Infrastructure nodes
-- **Language filter** (sidebar) — toggle individual languages on/off
-- **CLUSTER** toggle — pulls nodes toward their directory centroid
-- **Search bar** — highlights matching nodes and their neighbors
-- Click a node — opens detail panel showing type, language, layer, package, LOC, imports, imported-by
-- **↓ SVG** — exports current view
-
-### 2 — 3D Network
-Three.js sphere layout. Drag to orbit, scroll to zoom, right-drag to pan.
-
-- **↓ PNG** — exports canvas
-
-### 3 — Dependency Matrix
-Grid showing import relationships. Cell intensity encodes weight; sort by name, connections, or LOC.
-
-### 4 — Treemap
-Area-proportional repo structure. Click a group to zoom in; breadcrumb trail to navigate back.
-
-### 5 — Infrastructure
-Dedicated force graph showing only `service`, `pipeline`, and `database` nodes with their dependency edges. Useful for understanding Docker, CI, and schema relationships in isolation.
-
----
-
-## Keyboard shortcuts
-
-| Key | Action |
-|-----|--------|
-| `1` – `5` | Switch tabs |
-| `F` | Focus the search bar |
-| `R` | Refresh graph data |
-| `Esc` | Clear search / selection |
-
----
-
-## Architecture
-
-```
-repo-viz-explorer/
-├── repo-viz-explorer.html     # Single-file frontend (D3 + Three.js, no build step)
-├── analyze_repo.py            # Dispatcher: detects languages, delegates to plugins
-├── server.py                  # Minimal HTTP server (stdlib only)
-├── repo_graph.json            # Generated output
-└── analyzers/
-    ├── python_analyzer.py     # AST-based Python analysis
-    ├── js_analyzer.py         # JS/TS/Vue imports + framework detection
-    ├── css_analyzer.py        # CSS/SCSS/Less @import edges
-    ├── go_analyzer.py         # Go package-level nodes
-    ├── ruby_analyzer.py       # Ruby require/autoload
-    ├── rust_analyzer.py       # Rust mod/use crate
-    ├── java_analyzer.py       # Java/Kotlin FQN imports
-    ├── php_analyzer.py        # PHP PSR-4 namespace resolution
-    ├── docker_analyzer.py     # Docker Compose + Dockerfile
-    ├── ci_analyzer.py         # GitHub Actions + GitLab CI
-    ├── schema_analyzer.py     # SQL + Prisma schema
-    ├── cross_lang_analyzer.py # Cross-language API boundary detection
-    └── monorepo_analyzer.py   # Workspace / monorepo package detection
-```
-
-Each analyzer implements `analyze(root, group_map) → (nodes, ext_nodes, links_map, meta)`. Adding a new language means adding one file to `analyzers/` and one entry in the `_ANALYZERS` table in `analyze_repo.py`.
 
 ---
 
@@ -223,19 +208,16 @@ Each analyzer implements `analyze(root, group_map) → (nodes, ext_nodes, links_
 
 | Package | Purpose | Install |
 |---------|---------|---------|
-| `watchdog` | `--watch` file change detection | `pip install watchdog` |
-| `PyYAML` | Better Docker Compose / CI YAML parsing | `pip install pyyaml` |
-| `tomli` | Rust `Cargo.toml` parsing on Python < 3.11 | `pip install tomli` |
-
-All three are optional — the tool works without them, falling back to regex-based parsing where needed.
+| `watchdog` | `--watch` file change detection | `pip install 'codeindex[watch]'` |
+| `PyYAML` | Better Docker Compose / CI YAML parsing | `pip install 'codeindex[yaml]'` |
+| `tomli` | Rust `Cargo.toml` on Python < 3.11 | `pip install 'codeindex[toml]'` |
 
 ---
 
 ## Requirements
 
 - Python 3.9+
-- A modern browser (Chrome, Firefox, Safari, Edge)
-- Internet access for CDN fonts and libraries (D3, Three.js) — or swap the CDN links for local copies
+- A modern browser (for `--viz` mode)
 
 ---
 
