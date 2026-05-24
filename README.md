@@ -208,6 +208,95 @@ Installs a git pre-commit hook that warns when staged files exceed the blast sco
 
 ---
 
+## Using codeindex in another repo with Claude
+
+Three workflows, ordered by automation level.
+
+### Workflow 1 — MCP server (recommended for active coding)
+
+Claude gets a `lookup_symbol` tool it calls automatically. No extra prompting needed.
+
+**One-time setup:**
+```bash
+cd /your/other/repo
+codeindex analyze .
+codeindex symbols .
+```
+
+Add to `.claude/settings.json` in the target repo (or `~/.claude/settings.json` globally):
+```json
+{
+  "mcpServers": {
+    "codeindex": {
+      "command": "codeindex",
+      "args": ["serve", "--mcp"]
+    }
+  }
+}
+```
+
+Claude now has `lookup_symbol`, `build_symbol_index`, `get_impact`, and `get_dependencies` available as tools in every session. When it needs to find `processPayment`, it calls `lookup_symbol("processPayment")` and gets `src/billing.py:142` back in one shot — no file scanning.
+
+**Keep the index fresh:**
+```bash
+# Auto-rebuild on file changes (leave running in a terminal)
+codeindex symbols . --watch
+```
+
+---
+
+### Workflow 2 — CLAUDE.md injection (best for repos you revisit often)
+
+Symbol table is embedded in `CLAUDE.md` so it loads into every session automatically — no tool call needed at all.
+
+```bash
+cd /your/other/repo
+codeindex symbols . --claude-md
+```
+
+This upserts a `symbolindex` code fence into `CLAUDE.md`. Every Claude Code session in that repo loads it at startup. Claude can answer "where is `X` defined?" from context alone with zero tool calls.
+
+**Tradeoff:** adds ~500–2000 tokens to every prompt depending on repo size. Worth it for repos where symbol lookups are frequent; skip it for repos where you mostly write new code.
+
+**Keep it fresh:**
+```bash
+# Re-run after significant refactors
+codeindex analyze . && codeindex symbols . --claude-md
+```
+
+---
+
+### Workflow 3 — Hybrid (large repos)
+
+For large repos where the `--claude-md` section would be too large, use the MCP server for lookups and add a short hint to `CLAUDE.md` so Claude reaches for the tool first:
+
+```bash
+codeindex analyze .
+codeindex symbols .
+```
+
+Then add to `CLAUDE.md`:
+```markdown
+## Codeindex
+Symbol index: `symbolindex.json` — use the `lookup_symbol` MCP tool before grepping for any function or class.
+Dependency index: `codeindex.json` — use `get_impact` before modifying high-blast files.
+```
+
+This costs almost no tokens but primes Claude to use the index rather than defaulting to grep.
+
+---
+
+### Which workflow to pick
+
+| Situation | Workflow |
+|-----------|----------|
+| Daily driver repo, active feature work | MCP server |
+| Medium repo, frequent symbol lookups | CLAUDE.md injection |
+| Large repo (1000+ files) | MCP server + short CLAUDE.md hint |
+| Quick one-off in an unfamiliar repo | `codeindex symbols . --claude-md`, delete after |
+
+---
+
 ## Supported Languages
 
 | Language | Dependency analysis | Symbol extraction |
