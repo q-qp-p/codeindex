@@ -223,7 +223,7 @@ codeindex analyze .
 codeindex symbols .
 ```
 
-Add to `.claude/settings.json` in the target repo (or `~/.claude/settings.json` globally):
+Add to `.claude/settings.json` (shared/committed) or `.claude/settings.local.json` (personal/gitignored) in the target repo, or `~/.claude/settings.json` globally:
 ```json
 {
   "mcpServers": {
