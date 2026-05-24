@@ -192,6 +192,85 @@ codeindex serve --mcp
 
 ---
 
+### `codeindex lookup`
+
+```bash
+codeindex lookup SYMBOL [--index PATH] [--json]
+```
+
+Finds where a function, class, struct, or other symbol is defined. O(1) lookup against `symbolindex.json` — no file scanning.
+
+```
+$ codeindex lookup compute_blast_radius
+codeindex/impact.py:6  (function)
+
+$ codeindex lookup AuthService
+src/auth.py:44  (class)  methods: login, logout, refresh
+```
+
+| Flag | Description |
+|------|-------------|
+| `--index PATH` | Path to `symbolindex.json` (auto-discovered if omitted) |
+| `--json` | Output raw JSON |
+
+---
+
+### `codeindex dependencies`
+
+```bash
+codeindex dependencies FILE [--index PATH] [--json]
+```
+
+Shows what a file imports and what imports it, plus its blast score.
+
+```
+$ codeindex dependencies src/auth.py
+File: src/auth.py  (blast score: 8.5)
+
+Imports (3):
+  src/db.py
+  src/config.py
+  src/utils.py
+
+Imported by (2):
+  src/api.py
+  src/middleware.py
+```
+
+| Flag | Description |
+|------|-------------|
+| `--index PATH` | Path to `codeindex.json` (auto-discovered if omitted) |
+| `--json` | Output raw JSON |
+
+---
+
+### `codeindex high-blast`
+
+```bash
+codeindex high-blast [--threshold N] [--index PATH] [--json]
+```
+
+Lists all files whose blast score exceeds the threshold, sorted by score descending. Useful for identifying the riskiest files before a refactor.
+
+```
+$ codeindex high-blast --threshold 5
+Files with blast score ≥ 5.0  (3 found)
+
+  13.0  src/db.py          (12d / 2t)
+   8.5  src/auth.py        (3d / 7t)
+   5.5  src/config.py      (5d / 1t)
+```
+
+`d` = direct dependents · `t` = transitive dependents
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--threshold N` | `5` | Minimum blast score to include |
+| `--index PATH` | auto-discovered | Path to `codeindex.json` |
+| `--json` | off | Output raw JSON |
+
+---
+
 ### `codeindex install-hook`
 
 ```bash
