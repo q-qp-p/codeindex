@@ -302,19 +302,29 @@ codeindex analyze .
 codeindex symbols .
 ```
 
-Add to `.claude/settings.json` (shared/committed) or `.claude/settings.local.json` (personal/gitignored) in the target repo, or `~/.claude/settings.json` globally:
-```json
-{
-  "mcpServers": {
-    "codeindex": {
-      "command": "codeindex",
-      "args": ["serve", "--mcp"]
-    }
-  }
-}
+Register the MCP server with Claude Code using `claude mcp add`. Use `--scope project` to limit it to this repo, or `--scope global` to use it everywhere:
+
+```bash
+# Project-scoped (recommended — stored in .claude/settings.json)
+claude mcp add --scope project codeindex -- /path/to/codeindex serve --mcp
+
+# Global (available in all repos)
+claude mcp add --scope global codeindex -- /path/to/codeindex serve --mcp
 ```
 
-> **Note:** If `codeindex` isn't on Claude Code's PATH (common with conda/virtualenv installs), use the absolute path: `"command": "/path/to/codeindex"`. Run `which codeindex` to find it.
+Find the full path to your codeindex binary with `which codeindex`, then substitute it above.
+
+```bash
+# Example with conda install
+claude mcp add --scope project codeindex -- /opt/homebrew/Caskroom/miniforge/base/bin/codeindex serve --mcp
+```
+
+Verify it registered:
+```bash
+claude mcp list
+```
+
+> **Note:** Do not use `"command": "codeindex"` with a bare name — Claude Code does not inherit your shell PATH, so the binary won't be found unless you use the absolute path.
 
 Claude now has all 6 MCP tools available in every session. When it needs to find `processPayment`, it calls `lookup_symbol("processPayment")` and gets `src/billing.py:142` back in one shot — no file scanning.
 
