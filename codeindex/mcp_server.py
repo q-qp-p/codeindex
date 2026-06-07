@@ -1,10 +1,13 @@
+# Copyright 2026 David Scheiderman
+# Licensed under the Apache License, Version 2.0
 """Stdio MCP server — exposes codeindex tools to Claude and other MCP clients."""
 from __future__ import annotations
 import json
 import sys
 from pathlib import Path
 
-from codeindex.index import build, load, find_index, INDEX_FILENAME
+from codeindex.index import build, load, find_index, find_db, INDEX_FILENAME
+from codeindex.index import git_reachable, git_resolve
 from codeindex.impact import compute_blast_radius
 from codeindex.reporter import format_markdown
 from codeindex.symbols import SYMBOL_INDEX_FILENAME
@@ -119,6 +122,118 @@ TOOLS = [
                 },
             },
             "required": ["repo_path"],
+        },
+    },
+    {
+        "name": "semantic_search",
+        "description": (
+            "Hybrid semantic + keyword + graph search over indexed symbols. "
+            "Fuses semantic KNN (if sqlite-vec + embedding endpoint configured), FTS5 keyword "
+            "matching, and structural graph expansion via Reciprocal Rank Fusion. "
+            "Finds relevant functions/classes/symbols without knowing their exact names. "
+            "Degrades gracefully to keyword + graph when embeddings are unavailable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural-language or keyword query, e.g. 'validate auth token'.",
+                },
+                "k": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return. Default: 10.",
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": "Optional commit/ref — restrict to symbols visible at that point in history.",
+                },
+                "db_path": {
+                    "type": "string",
+                    "description": "Path to .codeindex/index.db. Auto-discovered from cwd if omitted.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "temporal_impact",
+        "description": (
+            "Compute blast-radius impact for a file at a historical commit/ref. "
+            "Shows which files depended on it at that point in time, not just at HEAD. "
+            "Requires codeindex analyze to have been run at (or near) the target commit, "
+            "or codeindex history to have backfilled temporal data."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Repo-relative file path, e.g. 'src/auth.py'.",
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": "Commit hash, branch, or tag to evaluate impact at.",
+                },
+                "db_path": {
+                    "type": "string",
+                    "description": "Path to .codeindex/index.db. Auto-discovered from cwd if omitted.",
+                },
+            },
+            "required": ["file"],
+        },
+    },
+    {
+        "name": "graph_query",
+        "description": (
+            "Return the k-hop dependency neighborhood of a file. "
+            "Use direction='dependents' to find what would break if this file changed, "
+            "'dependencies' to see what this file relies on, or 'both' for the full neighborhood."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Repo-relative file path, e.g. 'src/auth.py'.",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["dependents", "dependencies", "both"],
+                    "description": "Traversal direction. Default: 'both'.",
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": "Number of hops to traverse. Default: 2.",
+                },
+                "db_path": {
+                    "type": "string",
+                    "description": "Path to .codeindex/index.db. Auto-discovered from cwd if omitted.",
+                },
+            },
+            "required": ["file"],
+        },
+    },
+    {
+        "name": "changed_since",
+        "description": (
+            "List files and edges added or removed since a commit/ref. "
+            "Useful for understanding what has changed between two points in history — "
+            "new modules introduced, dependencies removed, structural drift."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "Commit hash, branch, or tag to compare against current HEAD.",
+                },
+                "db_path": {
+                    "type": "string",
+                    "description": "Path to .codeindex/index.db. Auto-discovered from cwd if omitted.",
+                },
+            },
+            "required": ["ref"],
         },
     },
 ]
@@ -266,6 +381,187 @@ def _call_build_symbol_index(params: dict) -> dict:
     }
 
 
+def _resolve_db(params: dict):
+    """Return an open Store for the db_path in params or auto-discovered from cwd."""
+    from codeindex.store import Store
+    db_path_str = params.get("db_path")
+    if db_path_str:
+        db_path = Path(db_path_str)
+    else:
+        db_path = find_db(Path.cwd())
+    if not db_path or not db_path.exists():
+        raise FileNotFoundError(
+            "No .codeindex/index.db found — run: codeindex analyze <repo>"
+        )
+    return Store(db_path)
+
+
+def _call_semantic_search(params: dict) -> dict:
+    from codeindex.semantic.search import hybrid_search
+    import os
+
+    store = _resolve_db(params)
+
+    provider = None
+    endpoint = os.environ.get("CODEINDEX_EMBEDDING_ENDPOINT", "")
+    model = os.environ.get("CODEINDEX_EMBEDDING_MODEL", "")
+    dims_str = os.environ.get("CODEINDEX_EMBEDDING_DIMS", "")
+    if endpoint and model and dims_str:
+        try:
+            from codeindex.semantic.provider import OpenAIEmbeddingProvider
+            provider = OpenAIEmbeddingProvider(
+                endpoint=endpoint, model=model, dims=int(dims_str)
+            )
+        except Exception:
+            pass
+
+    as_of_reachable = None
+    as_of = params.get("as_of")
+    if as_of:
+        repo_root_str = store.get_meta("repo_root")
+        repo_root = Path(repo_root_str) if repo_root_str else Path.cwd()
+        full_hash = git_resolve(repo_root, as_of)
+        if full_hash:
+            as_of_reachable = git_reachable(repo_root, full_hash)
+
+    results = hybrid_search(
+        store=store,
+        query=params["query"],
+        k=int(params.get("k", 10)),
+        as_of_reachable=as_of_reachable,
+        provider=provider,
+    )
+    store.close()
+    return {"query": params["query"], "count": len(results), "results": results}
+
+
+def _call_temporal_impact(params: dict) -> dict:
+    store = _resolve_db(params)
+    repo_root_str = store.get_meta("repo_root")
+    repo_root = Path(repo_root_str) if repo_root_str else Path.cwd()
+
+    as_of = params.get("as_of")
+    file_arg = params["file"]
+
+    # Resolve file path against indexed files
+    all_paths = [
+        r[0] for r in store._conn.execute("SELECT path FROM files").fetchall()
+    ]
+    clean = file_arg.lstrip("./")
+    file_id = None
+    if file_arg in all_paths:
+        file_id = file_arg
+    else:
+        for p in all_paths:
+            if p.endswith(clean) or clean.endswith(p):
+                file_id = p
+                break
+
+    if not file_id:
+        store.close()
+        return {"error": f"File not found in index: {file_arg}"}
+
+    if as_of:
+        full_hash = git_resolve(repo_root, as_of)
+        if not full_hash:
+            store.close()
+            return {"error": f"Could not resolve ref: {as_of}"}
+        reachable = git_reachable(repo_root, full_hash)
+        blast = store.as_of_impact(file_id, reachable)
+        store.close()
+        if blast is None:
+            return {
+                "error": (
+                    f"No temporal data for {file_id} at {as_of}. "
+                    "Run `codeindex history` to backfill or `codeindex analyze` at each commit."
+                )
+            }
+        return {
+            "file":                  file_id,
+            "as_of":                 as_of,
+            "blast_score":           blast["blast_score"],
+            "direct_dependents":     blast["direct_dependents"],
+            "transitive_dependents": blast["transitive_dependents"],
+            "direct_ids":            blast["direct_ids"],
+            "transitive_ids":        blast["transitive_ids"],
+        }
+
+    # Current HEAD: fall back to JSON-based path
+    store.close()
+    data = _resolve_index(None)
+    fid2 = _resolve_file_id(file_arg, data)
+    if not fid2:
+        return {"error": f"File not found in index: {file_arg}"}
+    blast_map = compute_blast_radius(data["nodes"], data["links"])
+    blast = blast_map.get(fid2)
+    if not blast:
+        return {"error": f"No blast data for {fid2}"}
+    total = len([n for n in data["nodes"] if n.get("type") != "import"])
+    report = format_markdown(fid2, blast, total)
+    return {
+        "file":                  fid2,
+        "blast_score":           blast["blast_score"],
+        "direct_dependents":     blast["direct_dependents"],
+        "transitive_dependents": blast["transitive_dependents"],
+        "direct_ids":            blast["direct_ids"],
+        "transitive_ids":        blast["transitive_ids"],
+        "report":                report,
+    }
+
+
+def _call_graph_query(params: dict) -> dict:
+    store = _resolve_db(params)
+    file_arg = params["file"]
+    direction = params.get("direction", "both")
+    depth = int(params.get("depth", 2))
+
+    # Resolve path against indexed files
+    all_paths = [
+        r[0] for r in store._conn.execute(
+            "SELECT path FROM files WHERE active=1"
+        ).fetchall()
+    ]
+    clean = file_arg.lstrip("./")
+    file_id = None
+    if file_arg in all_paths:
+        file_id = file_arg
+    else:
+        for p in all_paths:
+            if p.endswith(clean) or clean.endswith(p):
+                file_id = p
+                break
+
+    if not file_id:
+        store.close()
+        return {"error": f"File not found in active index: {file_arg}"}
+
+    result = store.neighborhood(file_id, direction, depth)
+    store.close()
+    return result
+
+
+def _call_changed_since(params: dict) -> dict:
+    store = _resolve_db(params)
+    repo_root_str = store.get_meta("repo_root")
+    repo_root = Path(repo_root_str) if repo_root_str else Path.cwd()
+
+    ref = params["ref"]
+    full_hash = git_resolve(repo_root, ref)
+    if not full_hash:
+        store.close()
+        return {"error": f"Could not resolve ref: {ref}"}
+
+    reachable = git_reachable(repo_root, full_hash)
+    if not reachable:
+        store.close()
+        return {"error": f"No commits reachable from {ref}"}
+
+    result = store.changed_since(reachable)
+    store.close()
+    result["ref"] = ref
+    return result
+
+
 _HANDLERS = {
     "analyze_repo":        _call_analyze_repo,
     "get_impact":          _call_get_impact,
@@ -273,6 +569,10 @@ _HANDLERS = {
     "get_high_blast_files": _call_get_high_blast_files,
     "lookup_symbol":       _call_lookup_symbol,
     "build_symbol_index":  _call_build_symbol_index,
+    "semantic_search":     _call_semantic_search,
+    "temporal_impact":     _call_temporal_impact,
+    "graph_query":         _call_graph_query,
+    "changed_since":       _call_changed_since,
 }
 
 

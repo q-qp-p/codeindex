@@ -807,6 +807,72 @@ class Store:
             result.append((r[0], " ".join(parts)))
         return result
 
+    def neighborhood(self, file_path: str, direction: str, depth: int) -> dict:
+        """Return k-hop neighborhood of a file for graph_query MCP tool.
+
+        *direction* is "dependents" (who imports this file), "dependencies"
+        (what this file imports), or "both".  Returns all reachable files within
+        *depth* hops, annotated with hop distance from the center.
+        """
+        start = self._conn.execute(
+            "SELECT id FROM files WHERE path=? AND active=1", (file_path,)
+        ).fetchone()
+        if not start:
+            return {"error": f"File not found in active index: {file_path}"}
+
+        visited: dict[int, int] = {start[0]: 0}
+        frontier = [start[0]]
+
+        for d in range(1, depth + 1):
+            next_frontier: list[int] = []
+            for fid in frontier:
+                if direction in ("dependents", "both"):
+                    rows = self._conn.execute(
+                        "SELECT source_file_id FROM edges WHERE target_file_id=? AND active=1",
+                        (fid,),
+                    ).fetchall()
+                    for r in rows:
+                        if r[0] not in visited:
+                            visited[r[0]] = d
+                            next_frontier.append(r[0])
+                if direction in ("dependencies", "both"):
+                    rows = self._conn.execute(
+                        "SELECT target_file_id FROM edges WHERE source_file_id=? AND active=1",
+                        (fid,),
+                    ).fetchall()
+                    for r in rows:
+                        if r[0] not in visited:
+                            visited[r[0]] = d
+                            next_frontier.append(r[0])
+            frontier = next_frontier
+            if not frontier:
+                break
+
+        nodes = []
+        for fid, hop in visited.items():
+            row = self._conn.execute(
+                """SELECT path, language, blast_score,
+                          direct_dependents, transitive_dependents
+                   FROM files WHERE id=?""",
+                (fid,),
+            ).fetchone()
+            if row:
+                nodes.append({
+                    "file":                  row[0],
+                    "language":              row[1],
+                    "blast_score":           row[2],
+                    "direct_dependents":     row[3],
+                    "transitive_dependents": row[4],
+                    "hop":                   hop,
+                })
+
+        return {
+            "center":    file_path,
+            "direction": direction,
+            "depth":     depth,
+            "nodes":     sorted(nodes, key=lambda x: (x["hop"], x["file"])),
+        }
+
     # ── status ────────────────────────────────────────────────────────────────
 
     def status(self) -> dict:

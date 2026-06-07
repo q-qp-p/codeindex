@@ -1,16 +1,19 @@
 # codeindex
 
-Repo dependency analyzer with **blast-radius impact scoring** and **symbol indexing** for AI-assisted development.
+**Temporal code knowledge graph** with blast-radius impact scoring, semantic symbol search, and git-history-aware dependency analysis — for AI-assisted development.
 
 Point it at any project — Python, JavaScript/TypeScript, Go, Ruby, Rust, Java, PHP, and more — and get:
 
-- A `codeindex.json` dependency index written directly into your repo
-- Per-file blast-radius scores (how many files break if this one changes)
+- A persistent **SQLite graph store** at `<repo>/.codeindex/index.db` — incremental, queryable, temporal
+- A `codeindex.json` dependency index written directly into your repo (preserved for backward compatibility)
+- Per-file blast-radius scores (how many files break if this one changes), including **historical as-of queries**
 - A `symbolindex.json` symbol map so AI can find any function/class without scanning every file
-- Five ways to consume the data: CLI, markdown report, MCP server, pre-commit hook, CLAUDE.md injection
+- **Hybrid semantic search** over symbols: natural-language queries fused with keyword + graph expansion
+- **Git history backfill** — temporal graph from commit history without touching the working tree
+- Ten ways to consume the data: CLI, markdown report, MCP server (10 tools), pre-commit hook, CLAUDE.md injection
 - An interactive visualization UI (2D/3D graphs, dependency matrix, treemap)
 
-No build step. No npm. Pure Python stdlib — zero required dependencies.
+No build step. No npm. Zero required runtime dependencies — SQLite is stdlib.
 
 ---
 
@@ -33,7 +36,7 @@ pip install -e .
 ## Quickstart
 
 ```bash
-# Build the dependency index
+# Build the dependency index (also writes to .codeindex/index.db)
 codeindex analyze ./myapp
 
 # Build the symbol index (where every function and class lives)
@@ -41,6 +44,12 @@ codeindex symbols ./myapp
 
 # See blast radius for a file before touching it
 codeindex impact src/auth.py
+
+# Search symbols with natural language (no embedding endpoint needed — FTS fallback)
+codeindex search "validate auth token"
+
+# See what changed since a release tag
+codeindex changed-since v1.2.0
 
 # Launch the visualization UI
 codeindex serve --viz --repo ./myapp
@@ -124,7 +133,7 @@ codeindex symbols ./myapp --inline --claude-md
 ### `codeindex impact`
 
 ```bash
-codeindex impact FILE [--index PATH] [--out FILE] [--json]
+codeindex impact FILE [--index PATH] [--out FILE] [--json] [--as-of REF]
 ```
 
 Shows the blast-radius impact for a specific file: direct dependents, transitive dependents, blast score, and risk level.
@@ -152,6 +161,128 @@ Risk: HIGH — affects 7/42 files (16.7% of codebase)
 | `--index PATH` | Path to `codeindex.json` (auto-discovered if omitted) |
 | `--out FILE` | Write a markdown report to this file |
 | `--json` | Output raw JSON |
+| `--as-of REF` | Compute blast radius at a historical commit/ref instead of HEAD |
+
+---
+
+### `codeindex search`
+
+```bash
+codeindex search QUERY [--k N] [--as-of REF] [--db PATH] [--json]
+```
+
+Hybrid semantic + keyword + graph symbol search. Finds relevant functions and classes without knowing their exact names.
+
+**Retrieval signals fused with Reciprocal Rank Fusion (RRF):**
+1. **Semantic KNN** — embedding similarity (requires `codeindex[semantic]` + a configured endpoint)
+2. **FTS5 keyword** — full-text search over symbol names, signatures, and docstrings
+3. **Graph expansion** — structurally adjacent symbols from dependent/dependency files
+
+Degrades gracefully: if no embedding endpoint is configured, falls back to FTS + graph (no crash, no config needed).
+
+```bash
+# Keyword + graph search (no embedding setup required)
+codeindex search "validate auth token"
+
+# Full semantic search (requires CODEINDEX_EMBEDDING_* env vars)
+CODEINDEX_EMBEDDING_ENDPOINT=http://localhost:11434 \
+CODEINDEX_EMBEDDING_MODEL=nomic-embed-text \
+CODEINDEX_EMBEDDING_DIMS=768 \
+codeindex search "validate auth token"
+
+# Historical search — symbols visible at a release tag
+codeindex search "token validation" --as-of v1.2.0
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `QUERY` | — | Natural-language or keyword query |
+| `--k N` | `10` | Number of results to return |
+| `--as-of REF` | HEAD | Restrict to symbols visible at this commit/ref |
+| `--db PATH` | auto-discovered | Path to `.codeindex/index.db` |
+| `--json` | off | Output raw JSON |
+
+---
+
+### `codeindex history`
+
+```bash
+codeindex history [REPO_PATH] [--since REF] [--max-commits N] [--json]
+```
+
+Backfills temporal graph data from git history — without any working-tree checkouts. Reads blobs via `git cat-file --batch` and stamps `first_seen_commit` / `last_seen_commit` on every file, edge, and symbol.
+
+Run this once after initial setup to enable `--as-of` queries across the full history.
+
+```bash
+# Backfill up to 1000 commits (default)
+codeindex history .
+
+# Backfill only recent history
+codeindex history . --since v1.0.0 --max-commits 200
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `REPO_PATH` | `.` | Path to repo root |
+| `--since REF` | — | Only process commits after this date/ref |
+| `--max-commits N` | `1000` | Maximum commits to process |
+| `--json` | off | Output summary as JSON |
+
+---
+
+### `codeindex changed-since`
+
+```bash
+codeindex changed-since REF [--repo PATH] [--db PATH] [--json]
+```
+
+Lists files and dependency edges added or removed since a commit, branch, or tag.
+
+```
+$ codeindex changed-since v1.2.0
+Changes since v1.2.0:
+
+  Added files (2):
+    + src/payments/stripe.py
+    + src/payments/webhook.py
+
+  Removed edges (1):
+    - src/api.py → src/auth_v1.py  [imports]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `REF` | — | Commit hash, branch, or tag to compare against |
+| `--repo PATH` | `.` | Repo root (for git operations) |
+| `--db PATH` | auto-discovered | Path to `.codeindex/index.db` |
+| `--json` | off | Output raw JSON |
+
+---
+
+### `codeindex db`
+
+```bash
+codeindex db status [--db PATH] [--json]
+codeindex db migrate [--db PATH]
+```
+
+Manages the SQLite store at `<repo>/.codeindex/index.db`.
+
+```
+$ codeindex db status
+schema_version      : 2
+repo_root           : /Users/alice/myapp
+last_indexed_commit : a3f2e1c8
+active_files        : 142
+active_edges        : 387
+active_symbols      : 1204
+embedding_model     : nomic-embed-text
+embedding_dims      : 768
+vec_symbols         : enabled
+```
+
+`db migrate` applies any pending schema migrations automatically (also runs on every `codeindex analyze`).
 
 ---
 
@@ -176,6 +307,10 @@ codeindex serve --mcp
 | `get_high_blast_files` | All files above a blast score threshold |
 | `build_symbol_index` | Build or refresh the symbol index |
 | `lookup_symbol` | Find where any function/class/type is defined (file + line) |
+| `semantic_search` | Hybrid semantic + keyword + graph symbol search; degrades gracefully without embeddings |
+| `temporal_impact` | Blast-radius at a historical commit/ref (`as_of` parameter) |
+| `graph_query` | k-hop dependency neighborhood of a file (`dependents`/`dependencies`/`both`) |
+| `changed_since` | Files and edges added or removed since a commit/ref |
 
 **Claude Code MCP config** (`.claude/settings.json`):
 
@@ -326,7 +461,7 @@ claude mcp list
 
 > **Note:** Do not use `"command": "codeindex"` with a bare name — Claude Code does not inherit your shell PATH, so the binary won't be found unless you use the absolute path.
 
-Claude now has all 6 MCP tools available in every session. When it needs to find `processPayment`, it calls `lookup_symbol("processPayment")` and gets `src/billing.py:142` back in one shot — no file scanning.
+Claude now has all 10 MCP tools available in every session. When it needs to find `processPayment`, it calls `lookup_symbol("processPayment")` and gets `src/billing.py:142` back in one shot — no file scanning. When it needs to find code that validates auth tokens without knowing the exact name, it calls `semantic_search("validate auth token")`.
 
 **Keep the index fresh:**
 ```bash
@@ -553,9 +688,31 @@ Kind abbreviations: `fn` function · `cls` class · `st` struct · `en` enum · 
 
 | Package | Purpose | Install |
 |---------|---------|---------|
+| `sqlite-vec` | Semantic vector search in `codeindex search` and `semantic_search` MCP tool | `pip install 'codeindex[semantic]'` |
 | `watchdog` | `--watch` file change detection | `pip install 'codeindex[watch]'` |
 | `PyYAML` | Better Docker Compose / CI YAML parsing | `pip install 'codeindex[yaml]'` |
 | `tomli` | Rust `Cargo.toml` on Python < 3.11 | `pip install 'codeindex[toml]'` |
+
+### Semantic search configuration
+
+Semantic search requires a self-hosted embedding endpoint (Ollama, LM Studio, llama.cpp server, or any OpenAI-compatible `/v1/embeddings` API) and the `sqlite-vec` extension.
+
+```bash
+pip install 'codeindex[semantic]'
+
+# Set env vars (add to your shell profile or .env)
+export CODEINDEX_EMBEDDING_ENDPOINT=http://localhost:11434
+export CODEINDEX_EMBEDDING_MODEL=nomic-embed-text
+export CODEINDEX_EMBEDDING_DIMS=768
+
+# Re-index to generate embeddings
+codeindex analyze ./myapp
+
+# Search
+codeindex search "validate JWT token"
+```
+
+Without these env vars, `codeindex search` and the `semantic_search` MCP tool fall back to FTS5 keyword + graph search — no crash, no config required.
 
 ---
 
