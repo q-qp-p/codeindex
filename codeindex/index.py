@@ -1,13 +1,66 @@
-"""Build and persist codeindex.json in the target repo root."""
+# Copyright 2026 David Scheiderman
+# Licensed under the Apache License, Version 2.0
+"""Build and persist codeindex.json in the target repo root.
+
+Phase-1 change: build() now also syncs graph data to a SQLite store at
+<repo>/.codeindex/index.db.  The JSON write path is unchanged so existing
+consumers keep working without modification.
+"""
 from __future__ import annotations
+
+import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 from codeindex.analyze import analyze
 from codeindex.impact import compute_blast_radius, enrich_nodes, enrich_links
+from codeindex.store import Store
 
 INDEX_FILENAME = "codeindex.json"
+_DB_DIR = ".codeindex"
+_DB_NAME = "index.db"
+
+
+def db_path_for(repo_root: Path) -> Path:
+    return repo_root / _DB_DIR / _DB_NAME
+
+
+def _git_head(root: Path) -> str | None:
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root, capture_output=True, text=True, timeout=10,
+        )
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def _git_changed(root: Path, from_commit: str, to_commit: str) -> set:
+    """Return repo-relative paths changed between two commits."""
+    try:
+        r = subprocess.run(
+            ["git", "diff", "--name-status", from_commit, to_commit],
+            cwd=root, capture_output=True, text=True, timeout=30,
+        )
+        paths = set()
+        for line in r.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                paths.add(parts[-1])  # rename lines have 3 parts; last is dest
+        return paths
+    except Exception:
+        return set()
+
+
+def _content_hash(root: Path, rel_path: str) -> str | None:
+    p = root / rel_path
+    try:
+        return hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+    except (OSError, IsADirectoryError):
+        return None
 
 
 def build(repo_path: str, output: Path | None = None) -> dict:
@@ -18,8 +71,50 @@ def build(repo_path: str, output: Path | None = None) -> dict:
     enrich_nodes(data["nodes"], blast)
     enrich_links(data["nodes"], data["links"])
 
-    # Store blast map in meta for quick lookup
     data["meta"]["indexed"] = True
+
+    # Attach content hashes before DB sync (used for future incremental detection)
+    for node in data["nodes"]:
+        node["content_hash"] = _content_hash(root, node["id"])
+
+    # Detect changed file set for informational logging
+    db_path = db_path_for(root)
+    head_commit = _git_head(root)
+    changed_paths: set | None = None
+
+    store = Store(db_path)
+    store.set_meta("repo_root", str(root))
+
+    last_commit = store.get_meta("last_indexed_commit")
+    if last_commit and head_commit and last_commit != head_commit:
+        changed_paths = _git_changed(root, last_commit, head_commit)
+        print(
+            f"Incremental: {len(changed_paths)} file(s) changed since {last_commit[:8]}",
+            file=sys.stderr,
+        )
+    elif last_commit is None:
+        print("Incremental: first index — full scan", file=sys.stderr)
+
+    store.sync(data, commit=head_commit, changed_paths=changed_paths)
+
+    if head_commit:
+        store.set_meta("last_indexed_commit", head_commit)
+        store._conn.commit()
+
+    # Build and sync symbol index
+    try:
+        from codeindex.symbols import build_symbol_index
+        symbol_data = build_symbol_index(str(root))
+        store.sync_symbols(symbol_data, commit=head_commit)
+    except Exception as exc:
+        print(f"Warning: symbol sync failed: {exc}", file=sys.stderr)
+
+    store.close()
+
+    # Remove content_hash from in-memory data before JSON export to keep
+    # the public schema unchanged.
+    for node in data["nodes"]:
+        node.pop("content_hash", None)
 
     dest = output or (root / INDEX_FILENAME)
     dest.write_text(json.dumps(data, indent=2))
@@ -47,6 +142,20 @@ def find_index(start: Path) -> Path | None:
     current = start.resolve()
     for _ in range(10):
         candidate = current / INDEX_FILENAME
+        if candidate.exists():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
+def find_db(start: Path) -> Path | None:
+    """Walk up from start looking for .codeindex/index.db."""
+    current = start.resolve()
+    for _ in range(10):
+        candidate = current / _DB_DIR / _DB_NAME
         if candidate.exists():
             return candidate
         parent = current.parent

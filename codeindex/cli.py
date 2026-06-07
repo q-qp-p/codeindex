@@ -251,6 +251,38 @@ def _cmd_high_blast(args: argparse.Namespace) -> None:
                   f"  ({n.get('direct_dependents', 0)}d / {n.get('transitive_dependents', 0)}t)")
 
 
+def _cmd_db(args: argparse.Namespace) -> None:
+    from codeindex.index import find_db
+    from codeindex.store import Store
+
+    db_path = Path(args.db) if getattr(args, "db", None) else find_db(Path.cwd())
+    if not db_path or not db_path.exists():
+        print("No .codeindex/index.db found — run: codeindex analyze <repo>", file=sys.stderr)
+        sys.exit(1)
+
+    if args.db_command == "status":
+        store = Store(db_path)
+        info = store.status()
+        store.close()
+        if getattr(args, "json", False):
+            print(json.dumps(info, indent=2))
+        else:
+            print(f"schema_version      : {info['schema_version']}")
+            print(f"repo_root           : {info['repo_root']}")
+            print(f"last_indexed_commit : {info['last_indexed_commit']}")
+            print(f"active_files        : {info['active_files']}")
+            print(f"active_edges        : {info['active_edges']}")
+            print(f"active_symbols      : {info['active_symbols']}")
+    elif args.db_command == "migrate":
+        # Schema migrations are applied automatically on Store.__init__.
+        # This command is a no-op in Phase 1 but provides the surface for
+        # future migration scripts.
+        store = Store(db_path)
+        current = store.get_meta("schema_version")
+        store.close()
+        print(f"Schema at version {current} — no pending migrations.")
+
+
 def _cmd_install_hook(args: argparse.Namespace) -> None:
     from codeindex.hook import install
     install(
@@ -336,6 +368,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_hb.add_argument("--index", help="Path to codeindex.json (auto-discovered if omitted)")
     p_hb.add_argument("--json", action="store_true", help="Output raw JSON")
 
+    # ── db ─────────────────────────────────────────────────────────────────────
+    p_db = sub.add_parser("db", help="Manage the SQLite store (.codeindex/index.db)")
+    p_db.add_argument("--db", help="Path to index.db (auto-discovered if omitted)")
+    p_db.add_argument("--json", action="store_true", help="Output raw JSON (status only)")
+    db_sub = p_db.add_subparsers(dest="db_command", required=True)
+    db_sub.add_parser("status", help="Show store schema version, last commit, and counts")
+    db_sub.add_parser("migrate", help="Apply pending schema migrations")
+
     # ── install-hook ───────────────────────────────────────────────────────
     p_hook = sub.add_parser("install-hook", help="Install a pre-commit hook for impact warnings")
     p_hook.add_argument("--repo", default=".", help="Repo root (default: .)")
@@ -359,6 +399,7 @@ def main() -> None:
         "dependencies": _cmd_dependencies,
         "high-blast":   _cmd_high_blast,
         "install-hook": _cmd_install_hook,
+        "db":           _cmd_db,
     }
     dispatch[args.command](args)
 
