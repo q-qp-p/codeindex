@@ -333,19 +333,28 @@ codeindex serve --mcp
 codeindex lookup SYMBOL [--index PATH] [--json]
 ```
 
-Finds where a function, class, struct, or other symbol is defined. O(1) lookup against `symbolindex.json` — no file scanning.
+Finds where a function, class, struct, or other symbol is defined. Queries the SQLite DB (same source as `search`), falling back to `symbolindex.json` if no DB is present. Prints 5 lines of source context around the definition.
 
 ```
 $ codeindex lookup compute_blast_radius
-codeindex/impact.py:6  (function)
+codeindex/impact.py:6  compute_blast_radius  (function)
+
+  >    6 | def compute_blast_radius(nodes: list[dict], links: list[dict]) -> dict[str, dict]:
+         7 |     """..."""
+         8 |     ...
 
 $ codeindex lookup AuthService
-src/auth.py:44  (class)  methods: login, logout, refresh
+src/auth.py:44  AuthService  (class)  methods: login, logout, refresh
+
+  >   44 | class AuthService:
+        45 |     def login(self, ...):
 ```
+
+If a symbol isn't found, it's likely a third-party import — only symbols defined in the repo are indexed.
 
 | Flag | Description |
 |------|-------------|
-| `--index PATH` | Path to `symbolindex.json` (auto-discovered if omitted) |
+| `--index PATH` | Path to `symbolindex.json` fallback (auto-discovered if omitted) |
 | `--json` | Output raw JSON |
 
 ---
@@ -403,6 +412,40 @@ Files with blast score ≥ 5.0  (3 found)
 | `--threshold N` | `5` | Minimum blast score to include |
 | `--index PATH` | auto-discovered | Path to `codeindex.json` |
 | `--json` | off | Output raw JSON |
+
+---
+
+### `codeindex symbol-blast`
+
+```bash
+codeindex symbol-blast FILE [--json]
+```
+
+Per-export blast radius for a file. Lists every exported symbol with the count and exact file paths of importers that reference it by name. Useful when a file exports many symbols and you only need to touch one — lets you confirm the others are safe.
+
+```
+$ codeindex symbol-blast lib/db/schema.ts
+
+Symbol-level blast radius: lib/db/schema.ts
+
+  5 exported symbol(s), 12 importer(s)
+
+  userSchema  (const, line 8)  →  8 user(s)
+    app/api/users/route.ts
+    app/api/profile/route.ts
+    ...
+  legacySchema  (const, line 42)  →  1 user(s)
+    scripts/migrate.ts
+  sessionSchema  (const, line 67)  →  3 user(s)
+    ...
+```
+
+`userSchema` touches 8 routes; `legacySchema` touches only 1 — safe to change in isolation.
+
+| Flag | Description |
+|------|-------------|
+| `FILE` | Repo-relative path to the file (e.g. `lib/db/schema.ts`) |
+| `--json` | Output raw JSON with full `used_by` arrays per symbol |
 
 ---
 
@@ -517,7 +560,7 @@ This costs almost no tokens but primes Claude to use the index rather than defau
 The same data available via MCP is also accessible directly from the terminal:
 
 ```bash
-# Find where a symbol is defined
+# Find where a symbol is defined (shows code snippet)
 codeindex lookup MyClassName
 codeindex lookup process_payment --json
 
@@ -529,6 +572,9 @@ codeindex high-blast --threshold 5
 
 # Blast-radius report before touching a file
 codeindex impact src/auth.py
+
+# Per-export blast radius — which importers use each exported symbol
+codeindex symbol-blast lib/db/schema.ts
 ```
 
 ---

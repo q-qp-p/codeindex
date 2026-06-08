@@ -1,7 +1,7 @@
 # codeindex Evaluation Prompt
 
 Copy and paste the following prompt into Claude Code from inside the repo you want to evaluate.
-Requires codeindex v0.3.0+ installed and `codeindex analyze` already run.
+Requires codeindex v0.3.6+ installed and `codeindex analyze` already run.
 
 ---
 
@@ -39,6 +39,8 @@ grep -r "<concept>" --include="*.py" --include="*.ts" --include="*.go" -l | grep
 codeindex search "<concept>"
 codeindex lookup <ClassName or function_name you spotted>
 ```
+
+Note: `lookup` prints the definition line plus 4 lines of source context. If a symbol isn't found, it's likely a third-party import (only repo-defined symbols are indexed).
 
 ---
 
@@ -111,9 +113,29 @@ Note: if you see "Warning: Git history has not been backfilled", run `codeindex 
 
 ---
 
+### Task 6 — Per-export blast radius
+
+Pick a high-blast file that exports multiple symbols (a schema, a utility module, a shared config). Answer: "Which specific exports are actually used, and by which files? Is it safe to change just one of them?"
+
+**Without codeindex:**
+```bash
+# For each exported name, grep importers separately:
+grep -r "ExportedName" --include="*.ts" --include="*.py" -l
+# repeat for each export — tedious for files with 5+ exports
+```
+
+**With codeindex:**
+```bash
+codeindex symbol-blast <file>
+```
+
+This lists every exported symbol with a count and the exact importer files that reference it by name — so you can see that changing `userSchema` affects 8 routes while `legacySchema` affects only 1.
+
+---
+
 ## Scoring rubric
 
-After running all 5 tasks, fill in this table:
+After running all 6 tasks, fill in this table:
 
 | Task | Without: steps to answer | Without: files opened | With: steps to answer | With: files opened | Winner |
 |------|--------------------------|-----------------------|-----------------------|--------------------|--------|
@@ -122,6 +144,7 @@ After running all 5 tasks, fill in this table:
 | 3. Neighborhood | | | | | |
 | 4. Riskiest files | | | | | |
 | 5. Structural drift | | | | | |
+| 6. Per-export blast | | | | | |
 
 Then answer:
 - Which codeindex result surprised you most? (Something you wouldn't have found with grep alone?)
