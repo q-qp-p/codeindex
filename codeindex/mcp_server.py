@@ -616,6 +616,9 @@ def _call_changed_since(params: dict) -> dict:
     )
     if analyze_origin_count:
         result["analyze_origin_edge_count"] = analyze_origin_count
+        # bootstrap_gap=True means history has been run but these edges still can't be
+        # dated further — they predate the first analyze. False means history was never run.
+        result["bootstrap_gap"] = not bool(result.get("warning"))
 
     return result
 

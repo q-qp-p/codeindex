@@ -512,8 +512,14 @@ def _cmd_changed_since(args: argparse.Namespace) -> None:
         if suppressed:
             print(f"\n  ({suppressed} unrelated edge changes omitted — run with --json to see all)")
         if analyze_origin_count and ae:
-            print(f"\n  ({analyze_origin_count} of {len(ae)} added edge(s) first seen at last-analyzed HEAD"
-                  f" — may be initial-indexing artifacts; run `codeindex history` to backfill)")
+            if result.get("warning"):
+                # history has never been run — backfill will resolve these
+                print(f"\n  ({analyze_origin_count} of {len(ae)} added edge(s) first seen at last-analyzed HEAD"
+                      f" — run `codeindex history` to date them accurately)")
+            else:
+                # history has been run; these edges predate the first analyze
+                print(f"\n  ({analyze_origin_count} of {len(ae)} added edge(s) are bootstrap-gap artifacts:"
+                      f" they existed before the first `codeindex analyze` and cannot be dated further)")
         if not any([mf, af, rf, ae, re_]):
             print("  (no changes detected)")
 
