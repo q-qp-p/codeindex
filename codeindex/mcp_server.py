@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from codeindex.index import build, load, find_index, find_db, INDEX_FILENAME
-from codeindex.index import git_reachable, git_resolve
+from codeindex.index import git_reachable, git_resolve, git_modified
 from codeindex.impact import compute_blast_radius
 from codeindex.reporter import format_markdown
 from codeindex.symbols import SYMBOL_INDEX_FILENAME
@@ -311,6 +311,7 @@ def _call_get_dependencies(params: dict) -> dict:
 def _call_get_high_blast_files(params: dict) -> dict:
     data = _resolve_index(params.get("index_path"))
     threshold = float(params.get("threshold", 5))
+    _NON_FILE_TYPES = {"import", "service", "pipeline", "database"}
     results = [
         {
             "file":       n["id"],
@@ -319,7 +320,7 @@ def _call_get_high_blast_files(params: dict) -> dict:
             "transitive": n.get("transitive_dependents", 0),
         }
         for n in data["nodes"]
-        if n.get("blast_score", 0) >= threshold and n.get("type") != "import"
+        if n.get("blast_score", 0) >= threshold and n.get("type") not in _NON_FILE_TYPES
     ]
     results.sort(key=lambda x: x["blast_score"], reverse=True)
     return {"files": results, "count": len(results), "threshold": threshold}
@@ -432,7 +433,12 @@ def _call_semantic_search(params: dict) -> dict:
         provider=provider,
     )
     store.close()
-    return {"query": params["query"], "count": len(results), "results": results}
+
+    # File-level aggregation: group by file, sorted by symbol hit count
+    from collections import Counter
+    file_counts = Counter(r["file"] for r in results)
+    files = [{"file": f, "symbol_hits": c} for f, c in file_counts.most_common()]
+    return {"query": params["query"], "count": len(results), "files": files, "results": results}
 
 
 def _call_temporal_impact(params: dict) -> dict:
@@ -559,7 +565,23 @@ def _call_changed_since(params: dict) -> dict:
     result = store.changed_since(reachable)
     store.close()
     result["ref"] = ref
-    # warning key already present in result if backfill hasn't been run
+
+    # Add content-modified files from git (files changed but not added/removed structurally)
+    modified = git_modified(repo_root, full_hash)
+    added_set = set(result.get("added_files", []))
+    removed_set = set(result.get("removed_files", []))
+    result["modified_files"] = [f for f in modified if f not in added_set and f not in removed_set]
+
+    # Filter edges to those touching the changed file set — whole-graph edge noise otherwise.
+    touched = added_set | removed_set | set(result["modified_files"])
+    all_ae = result["added_edges"]
+    all_re = result["removed_edges"]
+    result["added_edges"]   = [e for e in all_ae if e["source"] in touched or e["target"] in touched]
+    result["removed_edges"] = [e for e in all_re if e["source"] in touched or e["target"] in touched]
+    suppressed = (len(all_ae) - len(result["added_edges"])) + (len(all_re) - len(result["removed_edges"]))
+    if suppressed:
+        result["suppressed_edge_count"] = suppressed
+
     return result
 
 

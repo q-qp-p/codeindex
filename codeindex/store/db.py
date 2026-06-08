@@ -7,6 +7,7 @@ codeindex.semantic. The dependency arrow points only upward into this layer.
 """
 from __future__ import annotations
 
+import re
 import struct
 import sqlite3
 import sys
@@ -466,9 +467,10 @@ class Store:
                 ) VALUES (?,0,?,?,?)""",
                 (path, first_hash, now, now),
             )
-            # Set first_seen_commit only if NULL (preserve analyze() value)
+            # Always overwrite first_seen_commit from history — analyze() only knows HEAD,
+            # but history walks back to the true first commit for each file.
             self._conn.execute(
-                "UPDATE files SET first_seen_commit=? WHERE path=? AND first_seen_commit IS NULL",
+                "UPDATE files SET first_seen_commit=? WHERE path=?",
                 (first_hash, path),
             )
         self._conn.commit()
@@ -502,11 +504,13 @@ class Store:
                 ) VALUES (?,?,?,1,0,?,?,?)""",
                 (s_fid, t_fid, kind, first_hash, now, now),
             )
+            # Update ALL edge kinds between this pair — the backfill only tracks "imports"
+            # but the analyzer may record the same relationship as "renders"/"styles"/"depends".
+            # The historical first-seen time applies regardless of how the edge is classified.
             self._conn.execute(
                 """UPDATE edges SET first_seen_commit=?
-                   WHERE source_file_id=? AND target_file_id=? AND kind=?
-                   AND first_seen_commit IS NULL""",
-                (first_hash, s_fid, t_fid, kind),
+                   WHERE source_file_id=? AND target_file_id=?""",
+                (first_hash, s_fid, t_fid),
             )
         self._conn.commit()
 
@@ -595,27 +599,31 @@ class Store:
 
         warning = self._backfill_warning()
 
+        _source_types = "('module','component','hook','store','route','config')"
+
         added_files = [
-            r[0] for r in self._conn.execute("""
+            r[0] for r in self._conn.execute(f"""
                 SELECT path FROM files
                 WHERE active = 1
                 AND first_seen_commit IS NOT NULL
                 AND first_seen_commit NOT IN (SELECT hash FROM _reachable)
+                AND COALESCE(node_type,'module') IN {_source_types}
             """).fetchall()
         ]
 
         removed_files = [
-            r[0] for r in self._conn.execute("""
+            r[0] for r in self._conn.execute(f"""
                 SELECT path FROM files
                 WHERE active = 0
                 AND last_seen_commit IS NOT NULL
                 AND last_seen_commit NOT IN (SELECT hash FROM _reachable)
+                AND COALESCE(node_type,'module') IN {_source_types}
             """).fetchall()
         ]
 
         added_edges = [
             {"source": r[0], "target": r[1], "kind": r[2]}
-            for r in self._conn.execute("""
+            for r in self._conn.execute(f"""
                 SELECT f1.path, f2.path, e.kind
                 FROM edges e
                 JOIN files f1 ON e.source_file_id = f1.id
@@ -623,12 +631,14 @@ class Store:
                 WHERE e.active = 1
                 AND e.first_seen_commit IS NOT NULL
                 AND e.first_seen_commit NOT IN (SELECT hash FROM _reachable)
+                AND COALESCE(f1.node_type,'module') IN {_source_types}
+                AND COALESCE(f2.node_type,'module') IN {_source_types}
             """).fetchall()
         ]
 
         removed_edges = [
             {"source": r[0], "target": r[1], "kind": r[2]}
-            for r in self._conn.execute("""
+            for r in self._conn.execute(f"""
                 SELECT f1.path, f2.path, e.kind
                 FROM edges e
                 JOIN files f1 ON e.source_file_id = f1.id
@@ -636,6 +646,8 @@ class Store:
                 WHERE e.active = 0
                 AND e.last_seen_commit IS NOT NULL
                 AND e.last_seen_commit NOT IN (SELECT hash FROM _reachable)
+                AND COALESCE(f1.node_type,'module') IN {_source_types}
+                AND COALESCE(f2.node_type,'module') IN {_source_types}
             """).fetchall()
         ]
 
@@ -723,25 +735,31 @@ class Store:
         """
         if not query.strip():
             return []
+        # Strip characters that are FTS5 syntax (", *, ^, -, (, ))
+        # so raw user queries don't cause OperationalError.
+        safe = re.sub(r'["\*\^\-\(\)]', ' ', query).strip()
+        if not safe:
+            return []
+        words = safe.split()
         try:
+            # Multi-word: prefix-OR across all terms so "auth login" also matches
+            # "authenticate", "loginAction", etc.  Single-word gets the same treatment.
+            prefix_or = " OR ".join(w + "*" for w in words)
             rows = self._conn.execute(
                 "SELECT rowid FROM symbols_fts WHERE symbols_fts MATCH ? "
                 "ORDER BY rank LIMIT ?",
-                (query, k),
+                (prefix_or, k),
             ).fetchall()
             if rows:
                 return [r[0] for r in rows]
-            # AND returned nothing — retry with OR for multi-word queries
-            words = query.strip().split()
-            if len(words) > 1:
-                or_query = " OR ".join(words)
-                rows = self._conn.execute(
-                    "SELECT rowid FROM symbols_fts WHERE symbols_fts MATCH ? "
-                    "ORDER BY rank LIMIT ?",
-                    (or_query, k),
-                ).fetchall()
-                return [r[0] for r in rows]
-            return []
+            # Prefix-OR returned nothing — try exact phrase as last resort
+            phrase = '"' + " ".join(words) + '"'
+            rows = self._conn.execute(
+                "SELECT rowid FROM symbols_fts WHERE symbols_fts MATCH ? "
+                "ORDER BY rank LIMIT ?",
+                (phrase, k),
+            ).fetchall()
+            return [r[0] for r in rows]
         except sqlite3.OperationalError:
             return []
 
@@ -914,6 +932,12 @@ class Store:
 
     def status(self) -> dict:
         """Return a snapshot of store state for `codeindex db status`."""
+        try:
+            fts_rows = self._conn.execute(
+                "SELECT COUNT(*) FROM symbols_fts"
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            fts_rows = 0
         return {
             "schema_version":      self.get_meta("schema_version") or "unknown",
             "last_indexed_commit": self.get_meta("last_indexed_commit") or "none",
@@ -927,6 +951,7 @@ class Store:
             "active_symbols":      self._conn.execute(
                 "SELECT COUNT(*) FROM symbols WHERE active=1"
             ).fetchone()[0],
+            "fts_symbols":         fts_rows,
             "embedding_model":     self.get_meta("embedding_model") or "none",
             "embedding_dims":      self.get_meta("embedding_dims") or "none",
             "vec_symbols":         "enabled" if self._has_vec else "disabled",

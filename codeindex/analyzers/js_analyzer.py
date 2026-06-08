@@ -185,9 +185,74 @@ def extract_vue_imports(source: str):
     return extract_imports(match.group(1))
 
 
-def resolve_internal(mod: str, file_path: Path, root: Path, all_files: set):
+def _load_path_aliases(root: Path) -> "dict[str, list[str]]":
+    """Read tsconfig.json or jsconfig.json and return compilerOptions.paths aliases."""
+    for cfg_name in ("tsconfig.json", "jsconfig.json"):
+        cfg = root / cfg_name
+        if not cfg.exists():
+            continue
+        try:
+            import json as _json
+            data = _json.loads(cfg.read_text(errors="replace"))
+            paths = data.get("compilerOptions", {}).get("paths", {})
+            if paths:
+                return paths
+        except Exception:
+            continue
+    return {}
+
+
+def _resolve_alias(mod: str, aliases: "dict[str, list[str]]", root: Path, all_files: set):
+    """Try to resolve a bare module specifier via tsconfig path aliases."""
+    all_extensions = list(JS_EXTENSIONS) + [".css", ".scss", ".sass", ".less"]
+    for pattern, targets in aliases.items():
+        # Wildcard pattern: "@/*" matches "@/foo/bar"
+        if pattern.endswith("/*"):
+            prefix = pattern[:-2]  # e.g. "@"
+            if not mod.startswith(prefix + "/"):
+                continue
+            suffix = mod[len(prefix) + 1:]  # e.g. "lib/db/schema"
+            for target in targets:
+                if target.endswith("/*"):
+                    base = target[:-2].lstrip("./")  # e.g. "src"
+                    candidate_stem = (base + "/" + suffix).lstrip("/")
+                else:
+                    candidate_stem = (target.lstrip("./") + "/" + suffix).lstrip("/")
+                # Try with extensions
+                for ext in all_extensions:
+                    candidate = candidate_stem + ext
+                    if candidate in all_files:
+                        return candidate
+                # Try as-is (may already have extension)
+                if candidate_stem in all_files:
+                    return candidate_stem
+                # Try as directory index
+                for idx in ("index.ts", "index.tsx", "index.js", "index.jsx", "index.vue"):
+                    candidate = candidate_stem + "/" + idx
+                    if candidate in all_files:
+                        return candidate
+        else:
+            # Exact pattern: "@/utils" → ["./src/utils.ts"]
+            if mod != pattern:
+                continue
+            for target in targets:
+                candidate = target.lstrip("./")
+                for ext in [""] + all_extensions:
+                    c = candidate + ext
+                    if c in all_files:
+                        return c
+    return None
+
+
+def resolve_internal(mod: str, file_path: Path, root: Path, all_files: set,
+                     aliases=None):
     """Resolve a relative/absolute module path to a repo-relative file path."""
     if not (mod.startswith(".") or mod.startswith("/")):
+        # Try path aliases before giving up (e.g. "@/lib/auth", "~/utils")
+        if aliases:
+            resolved = _resolve_alias(mod, aliases, root, all_files)
+            if resolved:
+                return resolved
         return None  # Package import — handled separately
 
     base = file_path.parent
@@ -240,6 +305,7 @@ def analyze(root: Path, group_map: dict):
         return [], [], {}, {"total_files": 0, "total_loc": 0}
 
     _ext_deps, framework, package_manager = read_package_json(root)
+    aliases = _load_path_aliases(root)
 
     all_rel = {str(f.relative_to(root)) for f in js_files}
     # Also include CSS/stylesheet files so JS→CSS import links can be resolved
@@ -281,7 +347,7 @@ def analyze(root: Path, group_map: dict):
         })
 
         for mod in mods:
-            internal = resolve_internal(mod, f, root, all_rel)
+            internal = resolve_internal(mod, f, root, all_rel, aliases)
             if internal:
                 key = (rel, internal)
                 links_map[key] = links_map.get(key, 0) + 1

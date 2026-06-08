@@ -311,8 +311,10 @@ def _cmd_high_blast(args: argparse.Namespace) -> None:
             sys.exit(1)
     data = load(index_path)
     threshold = args.threshold
+    _NON_FILE_TYPES = {"import", "service", "pipeline", "database"}
     results = sorted(
-        [n for n in data["nodes"] if n.get("blast_score", 0) >= threshold and n.get("type") != "import"],
+        [n for n in data["nodes"]
+         if n.get("blast_score", 0) >= threshold and n.get("type") not in _NON_FILE_TYPES],
         key=lambda n: n["blast_score"], reverse=True,
     )
     if args.json:
@@ -350,6 +352,7 @@ def _cmd_db(args: argparse.Namespace) -> None:
             print(f"active_files        : {info['active_files']}")
             print(f"active_edges        : {info['active_edges']}")
             print(f"active_symbols      : {info['active_symbols']}")
+            print(f"fts_symbols         : {info['fts_symbols']}")
     elif args.db_command == "migrate":
         # Schema migrations are applied automatically on Store.__init__.
         # This command is a no-op in Phase 1 but provides the surface for
@@ -387,7 +390,7 @@ def _cmd_history(args: argparse.Namespace) -> None:
 
 
 def _cmd_changed_since(args: argparse.Namespace) -> None:
-    from codeindex.index import find_db, git_reachable, git_resolve
+    from codeindex.index import find_db, git_reachable, git_resolve, git_modified
     from codeindex.store import Store
 
     db_path = Path(args.db) if getattr(args, "db", None) else find_db(Path.cwd())
@@ -412,16 +415,40 @@ def _cmd_changed_since(args: argparse.Namespace) -> None:
     result = store.changed_since(reachable)
     store.close()
 
+    # Augment with content-modified files from git (files that changed but weren't added/removed)
+    modified = git_modified(repo, full_hash)
+    added_set = set(result.get("added_files", []))
+    removed_set = set(result.get("removed_files", []))
+    result["modified_files"] = [f for f in modified if f not in added_set and f not in removed_set]
+
+    # Filter edges to only those touching the changed file set — the full graph diff is noise.
+    touched = added_set | removed_set | set(result["modified_files"])
+    all_ae = result["added_edges"]
+    all_re = result["removed_edges"]
+    ae_filtered = [e for e in all_ae if e["source"] in touched or e["target"] in touched]
+    re_filtered = [e for e in all_re if e["source"] in touched or e["target"] in touched]
+    result["added_edges"]   = ae_filtered
+    result["removed_edges"] = re_filtered
+    suppressed = (len(all_ae) - len(ae_filtered)) + (len(all_re) - len(re_filtered))
+    if suppressed:
+        result["suppressed_edge_count"] = suppressed
+
     if args.json:
         print(json.dumps(result, indent=2))
     else:
         if result.get("warning"):
             print(f"Warning: {result['warning']}", file=sys.stderr)
+        mf = result["modified_files"]
         af = result["added_files"]
         rf = result["removed_files"]
         ae = result["added_edges"]
         re_ = result["removed_edges"]
-        print(f"Changes since {ref[:12] if len(ref) > 12 else ref}:")
+        ref_short = ref[:12] if len(ref) > 12 else ref
+        print(f"Changes since {ref_short}:")
+        if mf:
+            print(f"\n  Modified files ({len(mf)}):")
+            for f in mf:
+                print(f"    ~ {f}")
         if af:
             print(f"\n  Added files ({len(af)}):")
             for f in af:
@@ -438,7 +465,9 @@ def _cmd_changed_since(args: argparse.Namespace) -> None:
             print(f"\n  Removed edges ({len(re_)}):")
             for e in re_:
                 print(f"    - {e['source']} → {e['target']}  [{e['kind']}]")
-        if not any([af, rf, ae, re_]):
+        if suppressed:
+            print(f"\n  ({suppressed} unrelated edge changes omitted — run with --json to see all)")
+        if not any([mf, af, rf, ae, re_]):
             print("  (no changes detected)")
 
 
@@ -489,17 +518,28 @@ def _cmd_search(args: argparse.Namespace) -> None:
     store.close()
 
     if args.json:
-        print(json.dumps(results, indent=2))
+        # Augment JSON output with file-level aggregation
+        from collections import Counter
+        file_counts = Counter(r["file"] for r in results)
+        files_ranked = [{"file": f, "symbol_hits": c} for f, c in file_counts.most_common()]
+        print(json.dumps({"files": files_ranked, "symbols": results}, indent=2))
     else:
         if not results:
             print("No results found.")
             return
+        # File-level summary first — easier to scan for discovery queries
+        from collections import Counter
+        file_counts = Counter(r["file"] for r in results)
+        print("Files:")
+        for f, count in file_counts.most_common():
+            hits = f"  ({count} symbol{'s' if count > 1 else ''})"
+            print(f"  {f}{hits}")
+        print("\nSymbols:")
         for r in results:
             sig = f"  {r['signature']}" if r.get("signature") else ""
-            print(f"{r['file']}:{r['line']}  {r['name']}  ({r.get('kind', '?')}){sig}")
+            print(f"  {r['file']}:{r['line']}  {r['name']}  ({r.get('kind', '?')}){sig}")
             if r.get("doc"):
                 print(f"    {r['doc'][:120]}")
-            print(f"    signals: {', '.join(r['signals'])}  score: {r['rrf_score']}")
 
 
 def _cmd_install_hook(args: argparse.Namespace) -> None:

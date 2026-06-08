@@ -71,8 +71,11 @@ def hybrid_search(
     except Exception as exc:
         print(f"[codeindex] FTS search skipped: {exc}", file=sys.stderr)
 
-    # 3. Graph expansion: for top candidates, add structurally related symbols
-    if ranked_lists:
+    # 3. Graph expansion: supplement when primary signals are sparse.
+    # Skip if FTS (or semantic) already returned enough results — graph neighbours
+    # add structural noise that dilutes good keyword/semantic hits.
+    primary_hit_count = sum(len(lst) for lst in ranked_lists)
+    if ranked_lists and primary_hit_count < k:
         top_ids: list[int] = []
         for lst in ranked_lists:
             top_ids.extend(lst[:5])
@@ -83,7 +86,7 @@ def hybrid_search(
             if sid not in seen:
                 seen.add(sid)
                 deduped.append(sid)
-        graph_ids = store.graph_expand(deduped, k)
+        graph_ids = store.graph_expand(deduped, k - primary_hit_count)
         for sid in graph_ids:
             if sid not in seen:
                 _note(sid, "graph")

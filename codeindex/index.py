@@ -55,6 +55,23 @@ def _git_changed(root: Path, from_commit: str, to_commit: str) -> set:
         return set()
 
 
+def git_modified(root: Path, from_ref: str, to_ref: str = "HEAD") -> list[str]:
+    """Return repo-relative paths with content changes between two refs (status M only)."""
+    try:
+        r = subprocess.run(
+            ["git", "diff", "--name-status", from_ref, to_ref],
+            cwd=root, capture_output=True, text=True, timeout=30,
+        )
+        modified = []
+        for line in r.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2 and parts[0].startswith("M"):
+                modified.append(parts[-1])
+        return modified
+    except Exception:
+        return []
+
+
 def git_reachable(root: Path, ref: str) -> set:
     """Return the set of commit hashes reachable from ref (for as-of queries)."""
     try:
