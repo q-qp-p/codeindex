@@ -286,6 +286,7 @@ def _cmd_lookup(args: argparse.Namespace) -> None:
 
     if not matches:
         print(f"Symbol `{name}` not found in index.", file=sys.stderr)
+        print("(Only symbols defined in this repo are indexed; third-party imports are not.)", file=sys.stderr)
         sys.exit(1)
     if args.json:
         print(json.dumps({"name": name, "matches": matches}, indent=2))
@@ -376,6 +377,70 @@ def _cmd_high_blast(args: argparse.Namespace) -> None:
             loc_str = f"  {loc} loc" if loc else ""
             print(f"  {n['blast_score']:>6.1f}  {n['id']}"
                   f"  ({n.get('direct_dependents', 0)}d / {n.get('transitive_dependents', 0)}t){loc_str}")
+
+
+def _cmd_symbol_blast(args: argparse.Namespace) -> None:
+    """Per-export blast radius: which importers reference each exported symbol."""
+    from codeindex.index import find_db
+    import re as _re
+
+    db_path = find_db(Path.cwd())
+    if not db_path or not db_path.exists():
+        print("No .codeindex/index.db found — run: codeindex analyze <repo>", file=sys.stderr)
+        sys.exit(1)
+
+    from codeindex.store import Store
+    store = Store(db_path)
+    file_path = args.file
+
+    exports = store.exported_symbols_for_file(file_path)
+    if not exports:
+        print(f"No exported symbols found for {file_path}", file=sys.stderr)
+        print("(Check path is repo-relative and file was analyzed.)", file=sys.stderr)
+        store.close()
+        sys.exit(1)
+
+    importers = store.importers_of_file(file_path)
+    repo_root_str = store.get_meta("repo_root")
+    store.close()
+
+    repo_root = Path(repo_root_str) if repo_root_str else Path.cwd()
+
+    # For each importer, read source once and record which exported names appear.
+    importer_sources: dict[str, str] = {}
+    for imp in importers:
+        src_file = repo_root / imp
+        if src_file.exists():
+            importer_sources[imp] = src_file.read_text(errors="replace")
+
+    # Build symbol → [importer files] map.
+    usage: dict[str, list[str]] = {sym["name"]: [] for sym in exports}
+    for imp, src in importer_sources.items():
+        for sym in exports:
+            name = sym["name"]
+            # Word-boundary match so "auth" doesn't match "authenticate".
+            if _re.search(r'\b' + _re.escape(name) + r'\b', src):
+                usage[name].append(imp)
+
+    if args.json:
+        print(json.dumps({
+            "file": file_path,
+            "exports": [
+                {**sym, "used_by": usage[sym["name"]]}
+                for sym in exports
+            ],
+        }, indent=2))
+    else:
+        print(f"Symbol-level blast radius: {file_path}\n")
+        print(f"  {len(exports)} exported symbol(s), {len(importers)} importer(s)\n")
+        for sym in exports:
+            users = usage[sym["name"]]
+            tag = f"  ({sym['kind']}, line {sym['line']})"
+            print(f"  {sym['name']}{tag}  →  {len(users)} user(s)")
+            for u in sorted(users):
+                print(f"    {u}")
+        if not importers:
+            print("  (no files import this file — safe to change freely)")
 
 
 def _cmd_db(args: argparse.Namespace) -> None:
@@ -694,6 +759,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_hb.add_argument("--index", help="Path to codeindex.json (auto-discovered if omitted)")
     p_hb.add_argument("--json", action="store_true", help="Output raw JSON")
 
+    # ── symbol-blast ──────────────────────────────────────────────────────────
+    p_sb = sub.add_parser(
+        "symbol-blast",
+        help="Per-export blast radius: which importers reference each exported symbol",
+    )
+    p_sb.add_argument("file", help="Repo-relative path to the file (e.g. lib/db/schema.ts)")
+    p_sb.add_argument("--json", action="store_true", help="Output raw JSON")
+
     # ── db ─────────────────────────────────────────────────────────────────────
     p_db = sub.add_parser("db", help="Manage the SQLite store (.codeindex/index.db)")
     p_db.add_argument("--db", help="Path to index.db (auto-discovered if omitted)")
@@ -762,6 +835,7 @@ def main() -> None:
         "lookup":       _cmd_lookup,
         "dependencies": _cmd_dependencies,
         "high-blast":   _cmd_high_blast,
+        "symbol-blast":  _cmd_symbol_blast,
         "install-hook":  _cmd_install_hook,
         "db":            _cmd_db,
         "history":       _cmd_history,

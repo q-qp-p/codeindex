@@ -898,6 +898,33 @@ class Store:
             for r in rows
         ]
 
+    def exported_symbols_for_file(self, file_path: str) -> list[dict]:
+        """Return all active exported symbols for a repo-relative file path."""
+        rows = self._conn.execute(
+            """SELECT s.id, s.name, s.kind, s.line, s.signature, s.doc
+               FROM symbols s
+               JOIN files f ON s.file_id = f.id
+               WHERE f.path = ? AND s.exported = 1 AND s.active = 1
+               ORDER BY s.line""",
+            (file_path,),
+        ).fetchall()
+        return [
+            {"id": r[0], "name": r[1], "kind": r[2], "line": r[3],
+             "signature": r[4], "doc": r[5]}
+            for r in rows
+        ]
+
+    def importers_of_file(self, file_path: str) -> list[str]:
+        """Return repo-relative paths of all active files that import file_path."""
+        rows = self._conn.execute(
+            """SELECT f.path FROM files f
+               JOIN edges e ON e.source_file_id = f.id
+               JOIN files t ON e.target_file_id = t.id
+               WHERE t.path = ? AND e.active = 1 AND f.active = 1""",
+            (file_path,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
     def symbols_needing_embeddings(self) -> list[tuple[int, str]]:
         """Return (symbol_id, text) pairs for active symbols without a vec_symbols entry.
 

@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.6] - 2026-06-07
+
+### Added
+
+- **`codeindex symbol-blast <file>`** — per-export blast radius for a file. Lists every
+  exported symbol with a count and list of which importer files reference it by name.
+  Answers "which routes use each export from lib/db/schema.ts" without manual grep.
+  Supports `--json` for programmatic use.
+
+### Fixed
+
+- **`[renders]` edge label on non-component files** — `_JSX_PASCAL_RE` matched TypeScript
+  generics like `Promise<Response>` or `Map<Key, Val>`, causing `.ts` files with generics
+  to be classified as "component", then `link_kind("component","component")` returned
+  "renders". Added `(?<!\w)` negative lookbehind so generics (preceded by a word char)
+  are excluded.
+- **`lookup` not-found hint** — when a symbol isn't in the index, output now notes that
+  only repo-defined symbols are indexed (third-party imports like NextAuth are not).
+
 ## [0.3.5] - 2026-06-07
 
 ### Fixed

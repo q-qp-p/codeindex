@@ -48,8 +48,9 @@ _DYN_IMPORT_RE = re.compile(r"""(?<!\w)import\s*\(\s*['"]([^'"]+)['"]\s*\)""")
 # ── Component / hook / store detection regexes ────────────────────────────────
 # JSX return: return ( <... or return <...
 _JSX_RETURN_RE = re.compile(r'return\s*\(?[\s\n]*<[A-Za-z/]', re.MULTILINE)
-# PascalCase JSX element usage (strong signal of component file)
-_JSX_PASCAL_RE = re.compile(r'<[A-Z][A-Za-z]+[\s/>]')
+# PascalCase JSX element usage (strong signal of component file).
+# Negative lookbehind (?<!\w) excludes TypeScript generics like Promise<Response>.
+_JSX_PASCAL_RE = re.compile(r'(?<!\w)<[A-Z][A-Za-z]+[\s/>]')
 # export function/const useXxx or export default function useXxx
 _HOOK_EXPORT_RE = re.compile(r'export\s+(?:default\s+)?(?:const|function)\s+use[A-Z]')
 # Context API
